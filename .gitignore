@@ -1,0 +1,29 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# Kotlin/Java
+*.class
+*.jar
+*.log
+
+# Rust/Cargo
+native/target/
+
+# Mod runtime
+mod/run/
+mod/.kotlin/
+
+# Native libraries in resources (built artifacts)
+mod/src/main/resources/natives/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "mcap_replay",
+  "version": "${version}",
+  "name": "MCAP Replay",
+  "description": "Tick-accurate capture and cinematic replay.",
+  "authors": [
+    "replaycraft"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      {
+        "adapter": "kotlin",
+        "value": "dev.replaycraft.mcap.McapReplayClient"
+      }
+    ]
+  },
+  "mixins": [
+    "mcap_replay.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "fabric": "*",
+    "minecraft": "1.20.1",
+    "fabric-language-kotlin": "*"
+  }
+}
