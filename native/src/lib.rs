@@ -3,7 +3,7 @@ use crc32fast::Hasher;
 use jni::objects::{JByteArray, JClass, JString};
 use jni::sys::{jint, jlong};
 use jni::JNIEnv;
-use lz4_flex::compress_prepend_size;
+use lz4_flex::{compress_prepend_size, decompress_size_prepended};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::fs;
@@ -28,7 +28,17 @@ struct Session {
 }
 
 static SESSIONS: Lazy<Mutex<HashMap<i64, Session>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+static REPLAY_SESSIONS: Lazy<Mutex<HashMap<i64, ReplaySession>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 static NEXT_HANDLE: Lazy<Mutex<i64>> = Lazy::new(|| Mutex::new(1));
+
+#[derive(Debug)]
+struct ReplaySession {
+    session_dir: PathBuf,
+    chunks_dir: PathBuf,
+    db: Connection,
+    record_size: usize,
+    max_tick: i32,
+}
 
 fn alloc_handle() -> i64 {
     let mut h = NEXT_HANDLE.lock().unwrap();
@@ -167,8 +177,8 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeInitS
         chunks_dir,
         db,
         chunk_ticks: 400,  // 20 seconds at 20Hz
-        record_size: 12,   // must match JVM packed record
-        pending: Vec::with_capacity(400 * 12),
+        record_size: 28,   // must match JVM packed record (with position)
+        pending: Vec::with_capacity(400 * 28),
         pending_start_tick: -1,
         next_chunk_index: 0,
     };
@@ -202,7 +212,7 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeAppen
     if session.pending_start_tick < 0 {
         session.pending_start_tick = start_tick as i32;
     }
-    session.pending.extend_from_slice(&buf);
+    session.pending.extend_from_slice(&buf[0..len]);
 
     // Flush whole chunks
     let bytes_per_chunk = session.chunk_ticks * session.record_size;
@@ -232,4 +242,124 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeClose
         }
         let _ = session.db.execute("PRAGMA wal_checkpoint(TRUNCATE)", []);
     }
+}
+
+// ============== REPLAY FUNCTIONS ==============
+
+#[no_mangle]
+pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeOpenReplay(
+    mut env: JNIEnv,
+    _class: JClass,
+    session_path: JString,
+) -> jlong {
+    let session_path: String = env.get_string(&session_path).unwrap().into();
+    let session_dir = PathBuf::from(&session_path);
+    let chunks_dir = session_dir.join("chunks");
+    let db_path = session_dir.join("capture.sqlite");
+
+    if !db_path.exists() {
+        return -1;
+    }
+
+    let db = match Connection::open(&db_path) {
+        Ok(c) => c,
+        Err(_) => return -1,
+    };
+
+    // Get max tick from database
+    let max_tick: i32 = db
+        .query_row("SELECT COALESCE(MAX(endTick), -1) FROM chunks", [], |row| row.get(0))
+        .unwrap_or(-1);
+
+    let handle = alloc_handle();
+    let replay = ReplaySession {
+        session_dir,
+        chunks_dir,
+        db,
+        record_size: 28,
+        max_tick,
+    };
+
+    REPLAY_SESSIONS.lock().unwrap().insert(handle, replay);
+    handle as jlong
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeGetReplayMaxTick(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jint {
+    let sessions = REPLAY_SESSIONS.lock().unwrap();
+    match sessions.get(&(handle as i64)) {
+        Some(s) => s.max_tick as jint,
+        None => -1,
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeReadTick<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    tick: jint,
+) -> JByteArray<'local> {
+    let sessions = REPLAY_SESSIONS.lock().unwrap();
+    let session = match sessions.get(&(handle as i64)) {
+        Some(s) => s,
+        None => return env.new_byte_array(0).unwrap(),
+    };
+
+    // Find chunk containing this tick
+    let chunk_info: Result<(String, i32), _> = session.db.query_row(
+        "SELECT path, startTick FROM chunks WHERE startTick <= ?1 AND endTick >= ?1 LIMIT 1",
+        params![tick as i64],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    );
+
+    let (chunk_path, start_tick) = match chunk_info {
+        Ok(info) => info,
+        Err(_) => return env.new_byte_array(0).unwrap(),
+    };
+
+    // Read and decompress chunk
+    let full_path = session.chunks_dir.join(&chunk_path);
+    let data = match fs::read(&full_path) {
+        Ok(d) => d,
+        Err(_) => return env.new_byte_array(0).unwrap(),
+    };
+
+    if data.len() < 25 {
+        return env.new_byte_array(0).unwrap();
+    }
+
+    // Skip header (25 bytes), decompress payload
+    let payload = &data[25..];
+    let decompressed = match decompress_size_prepended(payload) {
+        Ok(d) => d,
+        Err(_) => return env.new_byte_array(0).unwrap(),
+    };
+
+    // Extract single tick record
+    let tick_offset = (tick - start_tick) as usize;
+    let byte_offset = tick_offset * session.record_size;
+    
+    if byte_offset + session.record_size > decompressed.len() {
+        return env.new_byte_array(0).unwrap();
+    }
+
+    let record = &decompressed[byte_offset..byte_offset + session.record_size];
+    
+    let result = env.new_byte_array(session.record_size as i32).unwrap();
+    let _ = env.set_byte_array_region(&result, 0, bytemuck::cast_slice(record));
+    result
+}
+
+#[no_mangle]
+pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeCloseReplay(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
+    REPLAY_SESSIONS.lock().unwrap().remove(&(handle as i64));
 }

@@ -9,10 +9,18 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class TickRingBuffer(val capacity: Int) {
     // Fixed-size record for JNI batching.
-    // Layout (little-endian):
-    // u16 flags, u8 hotbarOr255, i16 yaw_fp, i16 pitch_fp, u32 tick
-    // total = 2 + 1 + 2 + 2 + 4 = 11, pad to 12 for alignment
-    val recordSize: Int = 12
+    // Layout (little-endian, 28 bytes):
+    // u16 flags      (0-1)
+    // u8  hotbar     (2)
+    // u8  _pad       (3)
+    // i16 yaw_fp     (4-5)
+    // i16 pitch_fp   (6-7)
+    // u32 tick       (8-11)
+    // f32 x          (12-15)
+    // f32 y          (16-19)
+    // f32 z          (20-23)
+    // u32 _pad2      (24-27)
+    val recordSize: Int = 28
 
     private val buf: ByteBuffer = ByteBuffer.allocateDirect(capacity * recordSize).order(ByteOrder.LITTLE_ENDIAN)
 
@@ -28,7 +36,6 @@ class TickRingBuffer(val capacity: Int) {
         val w = writeIdx.get()
         val r = readIdx.get()
         if (w - r >= capacity) {
-            // Buffer full: drop optional data? For MVP we just stop writing new records.
             return
         }
 
@@ -51,10 +58,14 @@ class TickRingBuffer(val capacity: Int) {
         val slot = (w % capacity) * recordSize
         buf.putShort(slot + 0, flags.toShort())
         buf.put(slot + 2, if (hotbar in 0..8) hotbar.toByte() else 0xFF.toByte())
-        buf.putShort(slot + 3, yawFp)
-        buf.putShort(slot + 5, pitchFp)
-        buf.putInt(slot + 7, localTick)
-        buf.put(slot + 11, 0) // padding
+        buf.put(slot + 3, 0) // padding
+        buf.putShort(slot + 4, yawFp)
+        buf.putShort(slot + 6, pitchFp)
+        buf.putInt(slot + 8, localTick)
+        buf.putFloat(slot + 12, player.x.toFloat())
+        buf.putFloat(slot + 16, player.y.toFloat())
+        buf.putFloat(slot + 20, player.z.toFloat())
+        buf.putInt(slot + 24, 0) // padding
 
         localTick++
         writeIdx.lazySet(w + 1)
@@ -70,14 +81,16 @@ class TickRingBuffer(val capacity: Int) {
         val toRead = minOf(available, maxRecords)
         if (toRead <= 0) return 0
 
-        lastDrainedStartTick = buf.getInt(((r % capacity) * recordSize) + 7)
+        lastDrainedStartTick = buf.getInt(((r % capacity) * recordSize) + 8)
 
         var outOff = 0
         for (i in 0 until toRead) {
             val idx = (r + i) % capacity
             val base = idx * recordSize
-            buf.position(base)
-            buf.get(out, outOff, recordSize)
+            // Use absolute reads to avoid position-based threading issues
+            for (j in 0 until recordSize) {
+                out[outOff + j] = buf.get(base + j)
+            }
             outOff += recordSize
         }
 

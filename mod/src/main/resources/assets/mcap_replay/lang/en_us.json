@@ -1,7 +1,8 @@
 {
   "category.mcap_replay": "MCAP Replay",
-  "key.mcap_replay.toggle": "Toggle Replay Mode",
-  "key.mcap_replay.playpause": "Play/Pause Replay",
+  "key.mcap_replay.toggle": "Toggle Replay",
+  "key.mcap_replay.playpause": "Play / Pause",
   "key.mcap_replay.step": "Step One Tick",
-  "key.mcap_replay.exit": "Exit Replay"
+  "key.mcap_replay.prev_session": "Previous Session",
+  "key.mcap_replay.next_session": "Next Session"
 }

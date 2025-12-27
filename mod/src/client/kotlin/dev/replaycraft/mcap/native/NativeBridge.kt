@@ -63,9 +63,16 @@ object NativeBridge {
         return "{\"schema_version\":1,\"mc_version\":\"1.20.1\",\"yarn\":\"1.20.1+build.10\"}".toByteArray()
     }
 
+    // Capture functions
     external fun nativeInitSession(manifestJson: ByteArray, baseDir: String): Long
     external fun nativeAppendTicks(handle: Long, startTick: Int, packed: ByteArray, len: Int)
     external fun nativeCloseSession(handle: Long)
+
+    // Replay functions
+    external fun nativeOpenReplay(sessionPath: String): Long
+    external fun nativeGetReplayMaxTick(handle: Long): Int
+    external fun nativeReadTick(handle: Long, tick: Int): ByteArray
+    external fun nativeCloseReplay(handle: Long)
 
     init {
         // JNI expects this name.

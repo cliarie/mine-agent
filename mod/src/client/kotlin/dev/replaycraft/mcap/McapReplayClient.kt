@@ -24,7 +24,8 @@ object McapReplayClient : ClientModInitializer {
     private lateinit var keyToggleReplay: KeyBinding
     private lateinit var keyPlayPause: KeyBinding
     private lateinit var keyStep: KeyBinding
-    private lateinit var keyExit: KeyBinding
+    private lateinit var keyPrevSession: KeyBinding
+    private lateinit var keyNextSession: KeyBinding
 
     override fun onInitializeClient() {
         NativeBridge.ensureLoaded()
@@ -39,13 +40,16 @@ object McapReplayClient : ClientModInitializer {
             KeyBinding("key.mcap_replay.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_R, "category.mcap_replay")
         )
         keyPlayPause = KeyBindingHelper.registerKeyBinding(
-            KeyBinding("key.mcap_replay.playpause", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_SPACE, "category.mcap_replay")
+            KeyBinding("key.mcap_replay.playpause", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_G, "category.mcap_replay")
         )
         keyStep = KeyBindingHelper.registerKeyBinding(
             KeyBinding("key.mcap_replay.step", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_PERIOD, "category.mcap_replay")
         )
-        keyExit = KeyBindingHelper.registerKeyBinding(
-            KeyBinding("key.mcap_replay.exit", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_ESCAPE, "category.mcap_replay")
+        keyPrevSession = KeyBindingHelper.registerKeyBinding(
+            KeyBinding("key.mcap_replay.prev_session", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_LEFT_BRACKET, "category.mcap_replay")
+        )
+        keyNextSession = KeyBindingHelper.registerKeyBinding(
+            KeyBinding("key.mcap_replay.next_session", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_BRACKET, "category.mcap_replay")
         )
 
         // Handle keybindings on client tick
@@ -61,9 +65,16 @@ object McapReplayClient : ClientModInitializer {
             }
 
             if (replay.isActive) {
-                while (keyPlayPause.wasPressed()) replay.togglePlayPause()
-                while (keyStep.wasPressed()) replay.stepOneTick(client)
-                while (keyExit.wasPressed()) replay.stop()
+                while (keyPlayPause.wasPressed()) {
+                    println("[MCAP] G key pressed - toggling play/pause")
+                    replay.togglePlayPause()
+                }
+                while (keyStep.wasPressed()) {
+                    println("[MCAP] . key pressed - stepping")
+                    replay.stepOneTick(client)
+                }
+                while (keyPrevSession.wasPressed()) replay.prevSession()
+                while (keyNextSession.wasPressed()) replay.nextSession()
 
                 replay.onClientTick(client)
             }
