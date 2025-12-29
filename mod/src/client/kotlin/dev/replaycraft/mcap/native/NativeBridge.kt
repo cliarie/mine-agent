@@ -66,12 +66,14 @@ object NativeBridge {
     // Capture functions
     external fun nativeInitSession(manifestJson: ByteArray, baseDir: String): Long
     external fun nativeAppendTicks(handle: Long, startTick: Int, packed: ByteArray, len: Int)
+    external fun nativeAppendPackets(handle: Long, data: ByteArray, len: Int)
     external fun nativeCloseSession(handle: Long)
 
     // Replay functions
     external fun nativeOpenReplay(sessionPath: String): Long
     external fun nativeGetReplayMaxTick(handle: Long): Int
     external fun nativeReadTick(handle: Long, tick: Int): ByteArray
+    external fun nativeReadPacketsForTick(handle: Long, tick: Int): ByteArray
     external fun nativeCloseReplay(handle: Long)
 
     init {

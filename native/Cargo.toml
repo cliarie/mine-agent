@@ -11,6 +11,10 @@ crate-type = ["cdylib"]
 name = "inspect_cap"
 path = "src/bin/inspect_cap.rs"
 
+[[bin]]
+name = "inspect_packets"
+path = "src/bin/inspect_packets.rs"
+
 [dependencies]
 jni = "0.21"
 rusqlite = { version = "0.31", features = ["bundled"] }

@@ -1,5 +1,6 @@
 package dev.replaycraft.mcap
 
+import dev.replaycraft.mcap.capture.PacketCapture
 import dev.replaycraft.mcap.capture.TickRingBuffer
 import dev.replaycraft.mcap.native.NativeBridge
 import dev.replaycraft.mcap.replay.ReplayController
@@ -52,6 +53,10 @@ object McapReplayClient : ClientModInitializer {
             KeyBinding("key.mcap_replay.next_session", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_BRACKET, "category.mcap_replay")
         )
 
+        // Track key states for screen-aware input
+        var lastStepKeyState = false
+        var lastPlayPauseKeyState = false
+        
         // Handle keybindings on client tick
         ClientTickEvents.END_CLIENT_TICK.register(ClientTickEvents.EndTick { _ ->
             val player = client.player ?: return@EndTick
@@ -65,6 +70,7 @@ object McapReplayClient : ClientModInitializer {
             }
 
             if (replay.isActive) {
+                // Normal keybinding check (works when no screen is open)
                 while (keyPlayPause.wasPressed()) {
                     println("[MCAP] G key pressed - toggling play/pause")
                     replay.togglePlayPause()
@@ -75,6 +81,30 @@ object McapReplayClient : ClientModInitializer {
                 }
                 while (keyPrevSession.wasPressed()) replay.prevSession()
                 while (keyNextSession.wasPressed()) replay.nextSession()
+                
+                // Screen-aware key check (works even when screen is open)
+                if (client.currentScreen != null) {
+                    val window = client.window.handle
+                    
+                    // Check step key (.) directly via GLFW
+                    val stepKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_PERIOD) == GLFW.GLFW_PRESS
+                    if (stepKeyDown && !lastStepKeyState) {
+                        println("[MCAP] . key pressed (screen mode) - stepping")
+                        replay.stepOneTick(client)
+                    }
+                    lastStepKeyState = stepKeyDown
+                    
+                    // Check play/pause key (G) directly via GLFW
+                    val playPauseKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_G) == GLFW.GLFW_PRESS
+                    if (playPauseKeyDown && !lastPlayPauseKeyState) {
+                        println("[MCAP] G key pressed (screen mode) - toggling play/pause")
+                        replay.togglePlayPause()
+                    }
+                    lastPlayPauseKeyState = playPauseKeyDown
+                } else {
+                    lastStepKeyState = false
+                    lastPlayPauseKeyState = false
+                }
 
                 replay.onClientTick(client)
             }
@@ -85,7 +115,11 @@ object McapReplayClient : ClientModInitializer {
             val player = client.player ?: return@EndWorldTick
             if (replay.isActive) return@EndWorldTick
 
+            // Tick-based client state capture
             captureBuffer.tryWriteFromClient(client, player)
+            
+            // Tick the packet capture system
+            PacketCapture.onTick()
         })
 
         HudRenderCallback.EVENT.register(HudRenderCallback { drawContext, _ ->

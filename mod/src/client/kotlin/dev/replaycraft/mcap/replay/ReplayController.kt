@@ -2,8 +2,13 @@ package dev.replaycraft.mcap.replay
 
 import dev.replaycraft.mcap.mixin.EntityPrevAnglesAccessor
 import dev.replaycraft.mcap.native.NativeBridge
+import io.netty.buffer.Unpooled
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.DrawContext
+import net.minecraft.item.ItemStack
+import net.minecraft.network.PacketByteBuf
+import net.minecraft.network.packet.s2c.play.*
+import net.minecraft.screen.ScreenHandler
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -81,6 +86,7 @@ class ReplayController {
         println("[MCAP] Opened replay: $sessionName, maxTick=$maxTick")
 
         isActive = true
+        ReplayState.setReplayActive(true)
         isPlaying = false
         tick = 0
     }
@@ -103,6 +109,7 @@ class ReplayController {
             replayHandle = -1
         }
         isActive = false
+        ReplayState.setReplayActive(false)
         isPlaying = false
     }
 
@@ -194,6 +201,135 @@ class ReplayController {
         if (hotbar in 0..8) {
             player.inventory.selectedSlot = hotbar
         }
+        
+        // Apply packets for this tick
+        applyPacketsForTick(client, tick)
+    }
+    
+    // Packet type IDs (must match PacketCaptureMixin.java)
+    companion object {
+        private const val PKT_SCREEN_HANDLER_SLOT = 1
+        private const val PKT_INVENTORY = 2
+        private const val PKT_OPEN_SCREEN = 3
+        private const val PKT_CLOSE_SCREEN = 4
+        private const val PKT_PLAYER_POSITION = 5
+        private const val PKT_ENTITY_POSITION = 6
+        private const val PKT_BLOCK_UPDATE = 7
+        private const val PKT_HELD_ITEM_CHANGE = 8
+        private const val PKT_HEALTH_UPDATE = 11
+        private const val PKT_EXPERIENCE_UPDATE = 12
+    }
+    
+    private fun applyPacketsForTick(client: MinecraftClient, tick: Int) {
+        if (replayHandle < 0) return
+        
+        val packetsData = NativeBridge.nativeReadPacketsForTick(replayHandle, tick)
+        if (packetsData.isEmpty()) return
+        
+        val buf = ByteBuffer.wrap(packetsData).order(ByteOrder.LITTLE_ENDIAN)
+        
+        while (buf.remaining() >= 4) {
+            val packetId = buf.short.toInt() and 0xFFFF
+            val dataLen = buf.short.toInt() and 0xFFFF
+            
+            if (buf.remaining() < dataLen) break
+            
+            val packetData = ByteArray(dataLen)
+            buf.get(packetData)
+            
+            try {
+                applyPacket(client, packetId, packetData)
+            } catch (e: Exception) {
+                // Ignore packet parsing errors during replay
+                println("[MCAP] Error applying packet $packetId: ${e.message}")
+            }
+        }
+    }
+    
+    private fun applyPacket(client: MinecraftClient, packetId: Int, data: ByteArray) {
+        val player = client.player ?: return
+        val pktBuf = PacketByteBuf(Unpooled.wrappedBuffer(data))
+        
+        when (packetId) {
+            PKT_SCREEN_HANDLER_SLOT -> {
+                // Slot update in current screen handler
+                val packet = ScreenHandlerSlotUpdateS2CPacket(pktBuf)
+                val syncId = packet.syncId
+                val slot = packet.slot
+                val stack = packet.itemStack
+                
+                // Apply to player's current screen handler if syncId matches
+                val handler = player.currentScreenHandler
+                if (handler != null && handler.syncId == syncId && slot >= 0 && slot < handler.slots.size) {
+                    handler.slots[slot].stack = stack
+                }
+            }
+            
+            PKT_INVENTORY -> {
+                // Full inventory sync
+                val packet = InventoryS2CPacket(pktBuf)
+                val syncId = packet.syncId
+                val stacks = packet.contents
+                
+                val handler = player.currentScreenHandler
+                if (handler != null && handler.syncId == syncId) {
+                    for ((index, stack) in stacks.withIndex()) {
+                        if (index < handler.slots.size) {
+                            handler.slots[index].stack = stack
+                        }
+                    }
+                }
+            }
+            
+            PKT_HELD_ITEM_CHANGE -> {
+                // Server-side hotbar slot selection
+                val packet = UpdateSelectedSlotS2CPacket(pktBuf)
+                val slot = packet.slot
+                if (slot in 0..8) {
+                    player.inventory.selectedSlot = slot
+                }
+            }
+            
+            PKT_OPEN_SCREEN -> {
+                // For now, just log - opening screens requires more complex handling
+                println("[MCAP] OpenScreen packet at tick $tick")
+            }
+            
+            PKT_CLOSE_SCREEN -> {
+                // Close current screen
+                client.setScreen(null)
+            }
+            
+            PKT_PLAYER_POSITION -> {
+                // Server position correction - we handle position in tick data
+            }
+            
+            PKT_ENTITY_POSITION -> {
+                // Entity positions - would need entity tracking to apply
+            }
+            
+            PKT_BLOCK_UPDATE -> {
+                // Block updates - would need world access to apply
+            }
+            
+            PKT_HEALTH_UPDATE -> {
+                // Health, food, saturation update
+                val packet = HealthUpdateS2CPacket(pktBuf)
+                player.health = packet.health
+                player.hungerManager.foodLevel = packet.food
+                player.hungerManager.saturationLevel = packet.saturation
+            }
+            
+            PKT_EXPERIENCE_UPDATE -> {
+                // Experience update
+                val packet = ExperienceBarUpdateS2CPacket(pktBuf)
+                player.experienceProgress = packet.barProgress
+                player.totalExperience = packet.totalExperience
+                player.experienceLevel = packet.level
+            }
+        }
+        
+        pktBuf.release()
     }
 
     fun renderHud(ctx: DrawContext) {

@@ -225,6 +225,38 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeAppen
 }
 
 #[no_mangle]
+pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeAppendPackets(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    data: JByteArray,
+    len: jint,
+) {
+    let len = len as usize;
+    if len == 0 {
+        return;
+    }
+    let buf = env.convert_byte_array(&data).unwrap();
+
+    let mut sessions = SESSIONS.lock().unwrap();
+    let session = match sessions.get_mut(&(handle as i64)) {
+        Some(s) => s,
+        None => return,
+    };
+
+    // Write packets to a separate file (packets.bin)
+    let packets_path = session.session_dir.join("packets.bin");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&packets_path)
+        .unwrap();
+    
+    use std::io::Write;
+    file.write_all(&buf[0..len]).unwrap();
+}
+
+#[no_mangle]
 pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeCloseSession(
     _env: JNIEnv,
     _class: JClass,
@@ -353,6 +385,71 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeReadT
     let result = env.new_byte_array(session.record_size as i32).unwrap();
     let _ = env.set_byte_array_region(&result, 0, bytemuck::cast_slice(record));
     result
+}
+
+/// Read all packets for a specific tick from packets.bin
+/// Returns array of packets, each packet format: u16 packetId, u16 dataLen, data[]
+#[no_mangle]
+pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeReadPacketsForTick<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    tick: jint,
+) -> JByteArray<'local> {
+    let sessions = REPLAY_SESSIONS.lock().unwrap();
+    let session = match sessions.get(&(handle as i64)) {
+        Some(s) => s,
+        None => return env.new_byte_array(0).unwrap(),
+    };
+
+    let packets_path = session.session_dir.join("packets.bin");
+    if !packets_path.exists() {
+        return env.new_byte_array(0).unwrap();
+    }
+
+    let data = match fs::read(&packets_path) {
+        Ok(d) => d,
+        Err(_) => return env.new_byte_array(0).unwrap(),
+    };
+
+    // Parse packets and collect those matching the requested tick
+    // Format: u32 tick, u16 packetId, u16 dataLen, data[]
+    let mut result: Vec<u8> = Vec::new();
+    let mut offset = 0;
+
+    while offset + 8 <= data.len() {
+        let pkt_tick = u32::from_le_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]);
+        let pkt_id = u16::from_le_bytes([data[offset+4], data[offset+5]]);
+        let data_len = u16::from_le_bytes([data[offset+6], data[offset+7]]) as usize;
+        
+        offset += 8;
+        
+        if offset + data_len > data.len() {
+            break;
+        }
+
+        if pkt_tick == tick as u32 {
+            // Append: u16 packetId, u16 dataLen, data
+            result.extend_from_slice(&pkt_id.to_le_bytes());
+            result.extend_from_slice(&(data_len as u16).to_le_bytes());
+            result.extend_from_slice(&data[offset..offset + data_len]);
+        }
+
+        offset += data_len;
+        
+        // Early exit if we've passed the requested tick (packets are ordered by tick)
+        if pkt_tick > tick as u32 {
+            break;
+        }
+    }
+
+    if result.is_empty() {
+        return env.new_byte_array(0).unwrap();
+    }
+
+    let jarray = env.new_byte_array(result.len() as i32).unwrap();
+    let _ = env.set_byte_array_region(&jarray, 0, bytemuck::cast_slice(&result));
+    jarray
 }
 
 #[no_mangle]

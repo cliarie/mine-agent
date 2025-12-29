@@ -1,5 +1,6 @@
 package dev.replaycraft.mcap
 
+import dev.replaycraft.mcap.capture.PacketCapture
 import dev.replaycraft.mcap.capture.TickRingBuffer
 import dev.replaycraft.mcap.native.NativeBridge
 
@@ -13,20 +14,32 @@ class CaptureWriter(
         val handle = NativeBridge.nativeInitSession(NativeBridge.defaultManifestJson(), baseDir)
         var currentStartTick = -1
 
-        val batch = ByteArray(4096)
+        val tickBatch = ByteArray(4096)
+        
+        // Start packet capture
+        PacketCapture.startCapture()
 
         while (running) {
-            val drained = buffer.drainToByteArray(batch)
-            if (drained == 0) {
-                try { Thread.sleep(2) } catch (_: InterruptedException) {}
-                continue
+            // Drain tick data
+            val drained = buffer.drainToByteArray(tickBatch)
+            if (drained > 0) {
+                if (currentStartTick < 0) currentStartTick = buffer.lastDrainedStartTick
+                NativeBridge.nativeAppendTicks(handle, currentStartTick, tickBatch, drained)
+                currentStartTick += (drained / buffer.recordSize)
             }
-
-            if (currentStartTick < 0) currentStartTick = buffer.lastDrainedStartTick
-            NativeBridge.nativeAppendTicks(handle, currentStartTick, batch, drained)
-            currentStartTick += (drained / buffer.recordSize)
+            
+            // Drain packet data
+            val packetData = PacketCapture.drainPackets()
+            if (packetData.isNotEmpty()) {
+                NativeBridge.nativeAppendPackets(handle, packetData, packetData.size)
+            }
+            
+            if (drained == 0 && packetData.isEmpty()) {
+                try { Thread.sleep(2) } catch (_: InterruptedException) {}
+            }
         }
 
+        PacketCapture.stopCapture()
         NativeBridge.nativeCloseSession(handle)
     }, "mcap-writer")
 
