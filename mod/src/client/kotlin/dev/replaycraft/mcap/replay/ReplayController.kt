@@ -169,6 +169,11 @@ class ReplayController {
 
         val yaw = yawFp.toFloat() / 100.0f
         val pitch = pitchFp.toFloat() / 100.0f
+        
+        // Debug: log yaw/pitch values
+        if (tick % 20 == 0) {
+            println("[MCAP] Replay tick $tick: yaw=$yaw, pitch=$pitch, pos=($x, $y, $z)")
+        }
 
         // Teleport player to recorded position (use refreshPositionAndAngles for proper sync)
         val xd = x.toDouble()
@@ -193,10 +198,24 @@ class ReplayController {
         player.yaw = yaw
         player.pitch = pitch
         player.headYaw = yaw
+        player.bodyYaw = yaw
+        player.prevYaw = yaw
+        player.prevPitch = pitch
+        player.prevHeadYaw = yaw
+        player.prevBodyYaw = yaw
 
         val acc = player as EntityPrevAnglesAccessor
         acc.mcap_setPrevYaw(yaw)
         acc.mcap_setPrevPitch(pitch)
+        
+        // Also update the camera entity if it's the player
+        val cameraEntity = client.cameraEntity
+        if (cameraEntity != null && cameraEntity == player) {
+            cameraEntity.yaw = yaw
+            cameraEntity.pitch = pitch
+            cameraEntity.prevYaw = yaw
+            cameraEntity.prevPitch = pitch
+        }
 
         // Apply hotbar
         if (hotbar in 0..8) {
@@ -226,13 +245,23 @@ class ReplayController {
         if (replayHandle < 0) return
         
         val packetsData = NativeBridge.nativeReadPacketsForTick(replayHandle, tick)
-        if (packetsData.isEmpty()) return
+        if (packetsData.isEmpty()) {
+            // Debug: log when no packets found for tick
+            if (tick % 100 == 0) {
+                println("[MCAP] No packets for tick $tick")
+            }
+            return
+        }
+        
+        println("[MCAP] Found ${packetsData.size} bytes of packet data for tick $tick")
         
         val buf = ByteBuffer.wrap(packetsData).order(ByteOrder.LITTLE_ENDIAN)
         
         while (buf.remaining() >= 4) {
             val packetId = buf.short.toInt() and 0xFFFF
             val dataLen = buf.short.toInt() and 0xFFFF
+            
+            println("[MCAP] Packet: id=$packetId, dataLen=$dataLen, remaining=${buf.remaining()}")
             
             if (buf.remaining() < dataLen) break
             
@@ -244,6 +273,7 @@ class ReplayController {
             } catch (e: Exception) {
                 // Ignore packet parsing errors during replay
                 println("[MCAP] Error applying packet $packetId: ${e.message}")
+                e.printStackTrace()
             }
         }
     }
@@ -311,7 +341,15 @@ class ReplayController {
             }
             
             PKT_BLOCK_UPDATE -> {
-                // Block updates - would need world access to apply
+                // Block updates (restore blocks, cactus, etc.)
+                val packet = BlockUpdateS2CPacket(pktBuf)
+                val pos = packet.pos
+                val state = packet.state
+                val world = client.world
+                if (world != null) {
+                    println("[MCAP] Replaying block update at $pos to $state")
+                    world.setBlockState(pos, state, 3) // 3 = send to clients
+                }
             }
             
             PKT_HEALTH_UPDATE -> {
@@ -335,7 +373,8 @@ class ReplayController {
                 val packet = WorldTimeUpdateS2CPacket(pktBuf)
                 val world = client.world
                 if (world != null) {
-                    world.timeOfDay = packet.timeOfDay
+                    println("[MCAP] Replaying world time: ${packet.time}")
+                    world.timeOfDay = packet.time
                 }
             }
         }

@@ -55,6 +55,11 @@ class TickRingBuffer(val capacity: Int) {
         val yawFp = (player.yaw * 100.0f).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         val pitchFp = (player.pitch * 100.0f).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
 
+        // Debug: log yaw/pitch values during capture
+        if (localTick % 20 == 0) {
+            println("[MCAP] Capture tick $localTick: yaw=${player.yaw}, pitch=${player.pitch}, yawFp=$yawFp, pitchFp=$pitchFp")
+        }
+
         val slot = (w % capacity) * recordSize
         buf.putShort(slot + 0, flags.toShort())
         buf.put(slot + 2, if (hotbar in 0..8) hotbar.toByte() else 0xFF.toByte())

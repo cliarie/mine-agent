@@ -133,6 +133,7 @@ public class PacketCaptureMixin {
     private void mcap_onBlockUpdate(BlockUpdateS2CPacket packet, CallbackInfo ci) {
         if (!PacketCapture.isCapturing()) return;
         try {
+            System.out.println("[MCAP] Capturing block update at " + packet.getPos() + " to " + packet.getState());
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
@@ -197,6 +198,7 @@ public class PacketCaptureMixin {
     private void mcap_onWorldTimeUpdate(WorldTimeUpdateS2CPacket packet, CallbackInfo ci) {
         if (!PacketCapture.isCapturing()) return;
         try {
+            System.out.println("[MCAP] Capturing world time: " + packet.getTime());
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];

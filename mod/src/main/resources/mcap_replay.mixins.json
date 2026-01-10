@@ -7,7 +7,8 @@
     "EntityPrevAnglesAccessor",
     "ClientPlayNetworkHandlerMixin",
     "PacketCaptureMixin",
-    "PlayerEntityMixin"
+    "PlayerEntityMixin",
+    "WorldMixin"
   ],
   "injectors": {
     "defaultRequire": 1
