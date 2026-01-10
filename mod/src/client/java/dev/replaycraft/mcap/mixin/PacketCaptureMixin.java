@@ -30,18 +30,19 @@ public class PacketCaptureMixin {
     private static final int PKT_PLAYER_ACTION_RESPONSE = 10;
     private static final int PKT_HEALTH_UPDATE = 11;
     private static final int PKT_EXPERIENCE_UPDATE = 12;
+    private static final int PKT_WORLD_TIME = 13;
 
     // Inventory slot updates (chest, crafting, etc.)
     @Inject(method = "onScreenHandlerSlotUpdate", at = @At("HEAD"))
     private void mcap_onScreenHandlerSlotUpdate(ScreenHandlerSlotUpdateS2CPacket packet, CallbackInfo ci) {
-        if (!PacketCapture.INSTANCE.isCapturing()) return;
+        if (!PacketCapture.isCapturing()) return;
         try {
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
             buf.readBytes(data);
             buf.release();
-            PacketCapture.INSTANCE.capturePacket(PKT_SCREEN_HANDLER_SLOT, data);
+            PacketCapture.capturePacket(PKT_SCREEN_HANDLER_SLOT, data);
         } catch (Exception e) {
             // Ignore serialization errors
         }
@@ -50,14 +51,14 @@ public class PacketCaptureMixin {
     // Full inventory sync
     @Inject(method = "onInventory", at = @At("HEAD"))
     private void mcap_onInventory(InventoryS2CPacket packet, CallbackInfo ci) {
-        if (!PacketCapture.INSTANCE.isCapturing()) return;
+        if (!PacketCapture.isCapturing()) return;
         try {
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
             buf.readBytes(data);
             buf.release();
-            PacketCapture.INSTANCE.capturePacket(PKT_INVENTORY, data);
+            PacketCapture.capturePacket(PKT_INVENTORY, data);
         } catch (Exception e) {
             // Ignore
         }
@@ -66,14 +67,14 @@ public class PacketCaptureMixin {
     // Container/screen opened (chest, crafting table, etc.)
     @Inject(method = "onOpenScreen", at = @At("HEAD"))
     private void mcap_onOpenScreen(OpenScreenS2CPacket packet, CallbackInfo ci) {
-        if (!PacketCapture.INSTANCE.isCapturing()) return;
+        if (!PacketCapture.isCapturing()) return;
         try {
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
             buf.readBytes(data);
             buf.release();
-            PacketCapture.INSTANCE.capturePacket(PKT_OPEN_SCREEN, data);
+            PacketCapture.capturePacket(PKT_OPEN_SCREEN, data);
         } catch (Exception e) {
             // Ignore
         }
@@ -82,14 +83,14 @@ public class PacketCaptureMixin {
     // Screen closed
     @Inject(method = "onCloseScreen", at = @At("HEAD"))
     private void mcap_onCloseScreen(CloseScreenS2CPacket packet, CallbackInfo ci) {
-        if (!PacketCapture.INSTANCE.isCapturing()) return;
+        if (!PacketCapture.isCapturing()) return;
         try {
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
             buf.readBytes(data);
             buf.release();
-            PacketCapture.INSTANCE.capturePacket(PKT_CLOSE_SCREEN, data);
+            PacketCapture.capturePacket(PKT_CLOSE_SCREEN, data);
         } catch (Exception e) {
             // Ignore
         }
@@ -98,14 +99,14 @@ public class PacketCaptureMixin {
     // Player position/look from server
     @Inject(method = "onPlayerPositionLook", at = @At("HEAD"))
     private void mcap_onPlayerPositionLook(PlayerPositionLookS2CPacket packet, CallbackInfo ci) {
-        if (!PacketCapture.INSTANCE.isCapturing()) return;
+        if (!PacketCapture.isCapturing()) return;
         try {
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
             buf.readBytes(data);
             buf.release();
-            PacketCapture.INSTANCE.capturePacket(PKT_PLAYER_POSITION, data);
+            PacketCapture.capturePacket(PKT_PLAYER_POSITION, data);
         } catch (Exception e) {
             // Ignore
         }
@@ -114,14 +115,14 @@ public class PacketCaptureMixin {
     // Entity position updates
     @Inject(method = "onEntityPosition", at = @At("HEAD"))
     private void mcap_onEntityPosition(EntityPositionS2CPacket packet, CallbackInfo ci) {
-        if (!PacketCapture.INSTANCE.isCapturing()) return;
+        if (!PacketCapture.isCapturing()) return;
         try {
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
             buf.readBytes(data);
             buf.release();
-            PacketCapture.INSTANCE.capturePacket(PKT_ENTITY_POSITION, data);
+            PacketCapture.capturePacket(PKT_ENTITY_POSITION, data);
         } catch (Exception e) {
             // Ignore
         }
@@ -130,14 +131,14 @@ public class PacketCaptureMixin {
     // Block updates
     @Inject(method = "onBlockUpdate", at = @At("HEAD"))
     private void mcap_onBlockUpdate(BlockUpdateS2CPacket packet, CallbackInfo ci) {
-        if (!PacketCapture.INSTANCE.isCapturing()) return;
+        if (!PacketCapture.isCapturing()) return;
         try {
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
             buf.readBytes(data);
             buf.release();
-            PacketCapture.INSTANCE.capturePacket(PKT_BLOCK_UPDATE, data);
+            PacketCapture.capturePacket(PKT_BLOCK_UPDATE, data);
         } catch (Exception e) {
             // Ignore
         }
@@ -146,14 +147,14 @@ public class PacketCaptureMixin {
     // Held item change (hotbar selection from server)
     @Inject(method = "onUpdateSelectedSlot", at = @At("HEAD"))
     private void mcap_onUpdateSelectedSlot(UpdateSelectedSlotS2CPacket packet, CallbackInfo ci) {
-        if (!PacketCapture.INSTANCE.isCapturing()) return;
+        if (!PacketCapture.isCapturing()) return;
         try {
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
             buf.readBytes(data);
             buf.release();
-            PacketCapture.INSTANCE.capturePacket(PKT_HELD_ITEM_CHANGE, data);
+            PacketCapture.capturePacket(PKT_HELD_ITEM_CHANGE, data);
         } catch (Exception e) {
             // Ignore
         }
@@ -162,14 +163,14 @@ public class PacketCaptureMixin {
     // Health update
     @Inject(method = "onHealthUpdate", at = @At("HEAD"))
     private void mcap_onHealthUpdate(HealthUpdateS2CPacket packet, CallbackInfo ci) {
-        if (!PacketCapture.INSTANCE.isCapturing()) return;
+        if (!PacketCapture.isCapturing()) return;
         try {
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
             buf.readBytes(data);
             buf.release();
-            PacketCapture.INSTANCE.capturePacket(PKT_HEALTH_UPDATE, data);
+            PacketCapture.capturePacket(PKT_HEALTH_UPDATE, data);
         } catch (Exception e) {
             // Ignore
         }
@@ -178,14 +179,30 @@ public class PacketCaptureMixin {
     // Experience update
     @Inject(method = "onExperienceBarUpdate", at = @At("HEAD"))
     private void mcap_onExperienceBarUpdate(ExperienceBarUpdateS2CPacket packet, CallbackInfo ci) {
-        if (!PacketCapture.INSTANCE.isCapturing()) return;
+        if (!PacketCapture.isCapturing()) return;
         try {
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
             buf.readBytes(data);
             buf.release();
-            PacketCapture.INSTANCE.capturePacket(PKT_EXPERIENCE_UPDATE, data);
+            PacketCapture.capturePacket(PKT_EXPERIENCE_UPDATE, data);
+        } catch (Exception e) {
+            // Ignore
+        }
+    }
+
+    // World time update (day/night cycle)
+    @Inject(method = "onWorldTimeUpdate", at = @At("HEAD"))
+    private void mcap_onWorldTimeUpdate(WorldTimeUpdateS2CPacket packet, CallbackInfo ci) {
+        if (!PacketCapture.isCapturing()) return;
+        try {
+            PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
+            packet.write(buf);
+            byte[] data = new byte[buf.readableBytes()];
+            buf.readBytes(data);
+            buf.release();
+            PacketCapture.capturePacket(PKT_WORLD_TIME, data);
         } catch (Exception e) {
             // Ignore
         }

@@ -15,8 +15,10 @@ object PacketCapture {
     private val packetQueue = ConcurrentLinkedQueue<CapturedPacket>()
     
     @Volatile
-    var isCapturing: Boolean = false
-        private set
+    private var isCapturingInternal: Boolean = false
+    
+    @JvmStatic
+    fun isCapturing(): Boolean = isCapturingInternal
     
     @Volatile
     private var currentTick: Int = 0
@@ -27,25 +29,26 @@ object PacketCapture {
         val data: ByteArray
     )
     
+    @JvmStatic
     fun onGameJoin() {
         println("[MCAP] Game joined - packet capture ready")
         currentTick = 0
     }
     
     fun startCapture() {
-        isCapturing = true
+        isCapturingInternal = true
         currentTick = 0
         packetQueue.clear()
         println("[MCAP] Packet capture started")
     }
     
     fun stopCapture() {
-        isCapturing = false
+        isCapturingInternal = false
         println("[MCAP] Packet capture stopped, ${packetQueue.size} packets captured")
     }
     
     fun onTick() {
-        if (isCapturing) {
+        if (isCapturingInternal) {
             currentTick++
         }
     }
@@ -54,8 +57,9 @@ object PacketCapture {
      * Called from Mixin to capture a packet.
      * Returns the packet ID or -1 if not captured.
      */
+    @JvmStatic
     fun capturePacket(packetId: Int, data: ByteArray): Boolean {
-        if (!isCapturing) return false
+        if (!isCapturingInternal) return false
         
         packetQueue.add(CapturedPacket(currentTick, packetId, data))
         return true

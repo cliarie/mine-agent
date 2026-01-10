@@ -17,7 +17,8 @@ class ReplayController {
     var isActive: Boolean = false
         private set
 
-    private var isPlaying: Boolean = false
+    var isPlaying: Boolean = false
+        private set
     private var tick: Int = 0
     private var maxTick: Int = 0
     private var replayHandle: Long = -1
@@ -218,6 +219,7 @@ class ReplayController {
         private const val PKT_HELD_ITEM_CHANGE = 8
         private const val PKT_HEALTH_UPDATE = 11
         private const val PKT_EXPERIENCE_UPDATE = 12
+        private const val PKT_WORLD_TIME = 13
     }
     
     private fun applyPacketsForTick(client: MinecraftClient, tick: Int) {
@@ -324,8 +326,17 @@ class ReplayController {
                 // Experience update
                 val packet = ExperienceBarUpdateS2CPacket(pktBuf)
                 player.experienceProgress = packet.barProgress
-                player.totalExperience = packet.totalExperience
-                player.experienceLevel = packet.level
+                player.totalExperience = packet.experienceLevel // approximation
+                player.experienceLevel = packet.experienceLevel
+            }
+            
+            PKT_WORLD_TIME -> {
+                // World time update (day/night cycle)
+                val packet = WorldTimeUpdateS2CPacket(pktBuf)
+                val world = client.world
+                if (world != null) {
+                    world.timeOfDay = packet.timeOfDay
+                }
             }
         }
         

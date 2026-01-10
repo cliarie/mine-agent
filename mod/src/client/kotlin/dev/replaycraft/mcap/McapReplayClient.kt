@@ -53,60 +53,71 @@ object McapReplayClient : ClientModInitializer {
             KeyBinding("key.mcap_replay.next_session", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_BRACKET, "category.mcap_replay")
         )
 
-        // Track key states for screen-aware input
+        // Track key states for direct GLFW input (more reliable)
         var lastStepKeyState = false
         var lastPlayPauseKeyState = false
+        var lastToggleKeyState = false
+        var lastPrevKeyState = false
+        var lastNextKeyState = false
         
         // Handle keybindings on client tick
         ClientTickEvents.END_CLIENT_TICK.register(ClientTickEvents.EndTick { _ ->
             val player = client.player ?: return@EndTick
+            val window = client.window.handle
 
-            while (keyToggleReplay.wasPressed()) {
+            // Toggle replay - always use direct GLFW for reliability
+            val toggleKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
+            if (toggleKeyDown && !lastToggleKeyState) {
+                println("[MCAP] R key pressed - toggling replay mode")
                 if (!replay.isActive) {
                     replay.start()
                 } else {
                     replay.stop()
                 }
             }
+            lastToggleKeyState = toggleKeyDown
 
             if (replay.isActive) {
-                // Normal keybinding check (works when no screen is open)
-                while (keyPlayPause.wasPressed()) {
-                    println("[MCAP] G key pressed - toggling play/pause")
+                // Use direct GLFW key checking for all replay controls (more reliable)
+                
+                // Play/Pause (G)
+                val playPauseKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_G) == GLFW.GLFW_PRESS
+                if (playPauseKeyDown && !lastPlayPauseKeyState) {
+                    println("[MCAP] G key pressed - toggling play/pause, isPlaying was: ${replay.isPlaying}")
                     replay.togglePlayPause()
+                    println("[MCAP] G key pressed - isPlaying now: ${replay.isPlaying}")
                 }
-                while (keyStep.wasPressed()) {
+                lastPlayPauseKeyState = playPauseKeyDown
+                
+                // Step (.)
+                val stepKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_PERIOD) == GLFW.GLFW_PRESS
+                if (stepKeyDown && !lastStepKeyState) {
                     println("[MCAP] . key pressed - stepping")
                     replay.stepOneTick(client)
                 }
-                while (keyPrevSession.wasPressed()) replay.prevSession()
-                while (keyNextSession.wasPressed()) replay.nextSession()
+                lastStepKeyState = stepKeyDown
                 
-                // Screen-aware key check (works even when screen is open)
-                if (client.currentScreen != null) {
-                    val window = client.window.handle
-                    
-                    // Check step key (.) directly via GLFW
-                    val stepKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_PERIOD) == GLFW.GLFW_PRESS
-                    if (stepKeyDown && !lastStepKeyState) {
-                        println("[MCAP] . key pressed (screen mode) - stepping")
-                        replay.stepOneTick(client)
-                    }
-                    lastStepKeyState = stepKeyDown
-                    
-                    // Check play/pause key (G) directly via GLFW
-                    val playPauseKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_G) == GLFW.GLFW_PRESS
-                    if (playPauseKeyDown && !lastPlayPauseKeyState) {
-                        println("[MCAP] G key pressed (screen mode) - toggling play/pause")
-                        replay.togglePlayPause()
-                    }
-                    lastPlayPauseKeyState = playPauseKeyDown
-                } else {
-                    lastStepKeyState = false
-                    lastPlayPauseKeyState = false
+                // Prev session ([)
+                val prevKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_LEFT_BRACKET) == GLFW.GLFW_PRESS
+                if (prevKeyDown && !lastPrevKeyState) {
+                    replay.prevSession()
                 }
+                lastPrevKeyState = prevKeyDown
+                
+                // Next session (])
+                val nextKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_RIGHT_BRACKET) == GLFW.GLFW_PRESS
+                if (nextKeyDown && !lastNextKeyState) {
+                    replay.nextSession()
+                }
+                lastNextKeyState = nextKeyDown
 
                 replay.onClientTick(client)
+            } else {
+                // Reset states when replay not active
+                lastPlayPauseKeyState = false
+                lastStepKeyState = false
+                lastPrevKeyState = false
+                lastNextKeyState = false
             }
         })
 
