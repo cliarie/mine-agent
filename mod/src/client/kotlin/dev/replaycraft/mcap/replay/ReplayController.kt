@@ -90,6 +90,11 @@ class ReplayController {
         ReplayState.setReplayActive(true)
         isPlaying = false
         tick = 0
+        
+        // Apply tick 0 packets to restore initial world state
+        val client = MinecraftClient.getInstance()
+        applyPacketsForTick(client, 0)
+        println("[MCAP] Applied initial world state (tick 0 packets)")
     }
     
     fun nextSession() {
@@ -134,6 +139,8 @@ class ReplayController {
         tick++
         if (tick > maxTick) {
             tick = 0 // Loop replay
+            // Restore initial world state when looping
+            applyPacketsForTick(client, 0)
         }
     }
 
@@ -245,23 +252,13 @@ class ReplayController {
         if (replayHandle < 0) return
         
         val packetsData = NativeBridge.nativeReadPacketsForTick(replayHandle, tick)
-        if (packetsData.isEmpty()) {
-            // Debug: log when no packets found for tick
-            if (tick % 100 == 0) {
-                println("[MCAP] No packets for tick $tick")
-            }
-            return
-        }
-        
-        println("[MCAP] Found ${packetsData.size} bytes of packet data for tick $tick")
+        if (packetsData.isEmpty()) return
         
         val buf = ByteBuffer.wrap(packetsData).order(ByteOrder.LITTLE_ENDIAN)
         
         while (buf.remaining() >= 4) {
             val packetId = buf.short.toInt() and 0xFFFF
             val dataLen = buf.short.toInt() and 0xFFFF
-            
-            println("[MCAP] Packet: id=$packetId, dataLen=$dataLen, remaining=${buf.remaining()}")
             
             if (buf.remaining() < dataLen) break
             
@@ -272,8 +269,6 @@ class ReplayController {
                 applyPacket(client, packetId, packetData)
             } catch (e: Exception) {
                 // Ignore packet parsing errors during replay
-                println("[MCAP] Error applying packet $packetId: ${e.message}")
-                e.printStackTrace()
             }
         }
     }
@@ -347,7 +342,6 @@ class ReplayController {
                 val state = packet.state
                 val world = client.world
                 if (world != null) {
-                    println("[MCAP] Replaying block update at $pos to $state")
                     world.setBlockState(pos, state, 3) // 3 = send to clients
                 }
             }
@@ -373,7 +367,6 @@ class ReplayController {
                 val packet = WorldTimeUpdateS2CPacket(pktBuf)
                 val world = client.world
                 if (world != null) {
-                    println("[MCAP] Replaying world time: ${packet.time}")
                     world.timeOfDay = packet.time
                 }
             }

@@ -1,8 +1,5 @@
 package dev.replaycraft.mcap.capture
 
-import net.minecraft.network.packet.Packet
-import net.minecraft.network.PacketByteBuf
-import io.netty.buffer.Unpooled
 import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
@@ -35,11 +32,26 @@ object PacketCapture {
         currentTick = 0
     }
     
+    @Volatile
+    private var needsInitialCapture: Boolean = false
+    
     fun startCapture() {
         isCapturingInternal = true
         currentTick = 0
         packetQueue.clear()
+        needsInitialCapture = true
         println("[MCAP] Packet capture started")
+    }
+    
+    /**
+     * Check if initial world capture is needed and perform it.
+     * Must be called from the main thread (render thread).
+     */
+    fun checkInitialCapture() {
+        if (needsInitialCapture && isCapturingInternal) {
+            needsInitialCapture = false
+            InitialWorldCapture.captureInitialBlocks()
+        }
     }
     
     fun stopCapture() {
@@ -63,6 +75,15 @@ object PacketCapture {
         
         packetQueue.add(CapturedPacket(currentTick, packetId, data))
         return true
+    }
+    
+    /**
+     * Capture an initial state packet at tick 0.
+     * Used for capturing initial world state before any changes.
+     */
+    fun captureInitialPacket(packetId: Int, data: ByteArray) {
+        // Always store at tick 0 so it replays first
+        packetQueue.add(CapturedPacket(0, packetId, data))
     }
     
     /**

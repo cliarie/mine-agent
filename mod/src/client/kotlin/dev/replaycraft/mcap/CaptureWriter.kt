@@ -1,5 +1,6 @@
 package dev.replaycraft.mcap
 
+import dev.replaycraft.mcap.capture.InitialWorldCapture
 import dev.replaycraft.mcap.capture.PacketCapture
 import dev.replaycraft.mcap.capture.TickRingBuffer
 import dev.replaycraft.mcap.native.NativeBridge

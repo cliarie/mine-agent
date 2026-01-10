@@ -126,6 +126,9 @@ object McapReplayClient : ClientModInitializer {
             val player = client.player ?: return@EndWorldTick
             if (replay.isActive) return@EndWorldTick
 
+            // Check if we need to capture initial world state (must be on main thread)
+            PacketCapture.checkInitialCapture()
+            
             // Tick-based client state capture
             captureBuffer.tryWriteFromClient(client, player)
             
