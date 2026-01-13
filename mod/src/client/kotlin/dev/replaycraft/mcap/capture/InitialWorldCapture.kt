@@ -64,6 +64,5 @@ object InitialWorldCapture {
             }
         }
         
-        println("[MCAP] Captured $capturedCount initial blocks in ${CAPTURE_RADIUS * 2 + 1}^3 cube")
-    }
+            }
 }

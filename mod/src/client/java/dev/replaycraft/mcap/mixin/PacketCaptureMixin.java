@@ -2,7 +2,9 @@ package dev.replaycraft.mcap.mixin;
 
 import dev.replaycraft.mcap.capture.PacketCapture;
 import io.netty.buffer.Unpooled;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayNetworkHandler;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.network.PacketByteBuf;
 import net.minecraft.network.packet.s2c.play.*;
 import org.spongepowered.asm.mixin.Mixin;
@@ -31,6 +33,8 @@ public class PacketCaptureMixin {
     private static final int PKT_HEALTH_UPDATE = 11;
     private static final int PKT_EXPERIENCE_UPDATE = 12;
     private static final int PKT_WORLD_TIME = 13;
+    private static final int PKT_ENTITY_ANIMATION = 14;
+    private static final int PKT_BLOCK_BREAK_PROGRESS = 15;
 
     // Inventory slot updates (chest, crafting, etc.)
     @Inject(method = "onScreenHandlerSlotUpdate", at = @At("HEAD"))
@@ -128,12 +132,22 @@ public class PacketCaptureMixin {
         }
     }
 
-    // Block updates
+    // Block updates - only capture blocks within 64 blocks of player
+    private static final int BLOCK_CAPTURE_RADIUS = 64;
+    
     @Inject(method = "onBlockUpdate", at = @At("HEAD"))
     private void mcap_onBlockUpdate(BlockUpdateS2CPacket packet, CallbackInfo ci) {
         if (!PacketCapture.isCapturing()) return;
         try {
-            System.out.println("[MCAP] Capturing block update at " + packet.getPos() + " to " + packet.getState());
+            // Only capture block updates near the player to avoid capturing distant world updates
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client.player == null) return;
+            
+            BlockPos playerPos = client.player.getBlockPos();
+            BlockPos blockPos = packet.getPos();
+            double distance = Math.sqrt(playerPos.getSquaredDistance(blockPos));
+            if (distance > BLOCK_CAPTURE_RADIUS) return;
+            
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
@@ -198,13 +212,45 @@ public class PacketCaptureMixin {
     private void mcap_onWorldTimeUpdate(WorldTimeUpdateS2CPacket packet, CallbackInfo ci) {
         if (!PacketCapture.isCapturing()) return;
         try {
-            System.out.println("[MCAP] Capturing world time: " + packet.getTime());
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
             buf.readBytes(data);
             buf.release();
             PacketCapture.capturePacket(PKT_WORLD_TIME, data);
+        } catch (Exception e) {
+            // Ignore
+        }
+    }
+    
+    // Entity animation (arm swing for attacking, damage, etc.)
+    @Inject(method = "onEntityAnimation", at = @At("HEAD"))
+    private void mcap_onEntityAnimation(EntityAnimationS2CPacket packet, CallbackInfo ci) {
+        if (!PacketCapture.isCapturing()) return;
+        try {
+            PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
+            packet.write(buf);
+            byte[] data = new byte[buf.readableBytes()];
+            buf.readBytes(data);
+            buf.release();
+            PacketCapture.capturePacket(PKT_ENTITY_ANIMATION, data);
+        } catch (Exception e) {
+            // Ignore
+        }
+    }
+    
+    // Block breaking progress (mining animation)
+    @Inject(method = "onBlockBreakingProgress", at = @At("HEAD"))
+    private void mcap_onBlockBreakingProgress(BlockBreakingProgressS2CPacket packet, CallbackInfo ci) {
+        if (!PacketCapture.isCapturing()) return;
+        try {
+            PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
+            packet.write(buf);
+            byte[] data = new byte[buf.readableBytes()];
+            buf.readBytes(data);
+            buf.release();
+            System.out.println("[MCAP] Capturing block break: entityId=" + packet.getEntityId() + ", pos=" + packet.getPos() + ", progress=" + packet.getProgress());
+            PacketCapture.capturePacket(PKT_BLOCK_BREAK_PROGRESS, data);
         } catch (Exception e) {
             // Ignore
         }

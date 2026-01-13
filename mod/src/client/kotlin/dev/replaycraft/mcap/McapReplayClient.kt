@@ -68,7 +68,6 @@ object McapReplayClient : ClientModInitializer {
             // Toggle replay - always use direct GLFW for reliability
             val toggleKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
             if (toggleKeyDown && !lastToggleKeyState) {
-                println("[MCAP] R key pressed - toggling replay mode")
                 if (!replay.isActive) {
                     replay.start()
                 } else {
@@ -83,16 +82,13 @@ object McapReplayClient : ClientModInitializer {
                 // Play/Pause (G)
                 val playPauseKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_G) == GLFW.GLFW_PRESS
                 if (playPauseKeyDown && !lastPlayPauseKeyState) {
-                    println("[MCAP] G key pressed - toggling play/pause, isPlaying was: ${replay.isPlaying}")
                     replay.togglePlayPause()
-                    println("[MCAP] G key pressed - isPlaying now: ${replay.isPlaying}")
                 }
                 lastPlayPauseKeyState = playPauseKeyDown
                 
                 // Step (.)
                 val stepKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_PERIOD) == GLFW.GLFW_PRESS
                 if (stepKeyDown && !lastStepKeyState) {
-                    println("[MCAP] . key pressed - stepping")
                     replay.stepOneTick(client)
                 }
                 lastStepKeyState = stepKeyDown

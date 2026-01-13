@@ -49,16 +49,15 @@ class TickRingBuffer(val capacity: Int) {
         if (options.jumpKey.isPressed) flags = flags or (1 shl 4)
         if (options.sneakKey.isPressed) flags = flags or (1 shl 5)
         if (options.sprintKey.isPressed) flags = flags or (1 shl 6)
+        // Bit 7: screen is open (inventory, chest, etc.)
+        if (client.currentScreen != null) flags = flags or (1 shl 7)
+        // Bit 8: player is swinging arm (attacking)
+        if (player.handSwinging) flags = flags or (1 shl 8)
 
         val hotbar = player.inventory.selectedSlot
 
         val yawFp = (player.yaw * 100.0f).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
         val pitchFp = (player.pitch * 100.0f).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt()).toShort()
-
-        // Debug: log yaw/pitch values during capture
-        if (localTick % 20 == 0) {
-            println("[MCAP] Capture tick $localTick: yaw=${player.yaw}, pitch=${player.pitch}, yawFp=$yawFp, pitchFp=$pitchFp")
-        }
 
         val slot = (w % capacity) * recordSize
         buf.putShort(slot + 0, flags.toShort())

@@ -28,7 +28,6 @@ object PacketCapture {
     
     @JvmStatic
     fun onGameJoin() {
-        println("[MCAP] Game joined - packet capture ready")
         currentTick = 0
     }
     
@@ -40,8 +39,7 @@ object PacketCapture {
         currentTick = 0
         packetQueue.clear()
         needsInitialCapture = true
-        println("[MCAP] Packet capture started")
-    }
+            }
     
     /**
      * Check if initial world capture is needed and perform it.
@@ -56,8 +54,7 @@ object PacketCapture {
     
     fun stopCapture() {
         isCapturingInternal = false
-        println("[MCAP] Packet capture stopped, ${packetQueue.size} packets captured")
-    }
+            }
     
     fun onTick() {
         if (isCapturingInternal) {

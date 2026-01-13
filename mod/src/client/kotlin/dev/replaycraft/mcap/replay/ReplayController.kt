@@ -29,19 +29,16 @@ class ReplayController {
     private var selectedSessionIndex: Int = 0
 
     fun start() {
-        println("[MCAP] ReplayController.start() called")
-        val client = MinecraftClient.getInstance()
+                val client = MinecraftClient.getInstance()
         val sessionsDir = File(client.runDirectory, "mcap_replay/sessions")
         
         if (!sessionsDir.exists()) {
-            println("[MCAP] No sessions directory found")
             return
         }
 
         // Find all sessions with actual data
         val sessions = sessionsDir.listFiles()?.filter { it.isDirectory }?.sortedByDescending { it.name }
         if (sessions.isNullOrEmpty()) {
-            println("[MCAP] No replay sessions found")
             return
         }
 
@@ -53,12 +50,10 @@ class ReplayController {
         }
         
         if (availableSessions.isEmpty()) {
-            println("[MCAP] No session with recorded data found")
             return
         }
 
-        println("[MCAP] Found ${availableSessions.size} session(s) with data")
-        selectedSessionIndex = 0
+                selectedSessionIndex = 0
         openSelectedSession()
     }
     
@@ -75,38 +70,53 @@ class ReplayController {
         
         val session = availableSessions[selectedSessionIndex]
         sessionName = session.name
-        println("[MCAP] Opening session: ${session.absolutePath}")
-        
+                
         replayHandle = NativeBridge.nativeOpenReplay(session.absolutePath)
         if (replayHandle < 0) {
-            println("[MCAP] Failed to open replay: ${session.absolutePath}")
-            return
+                        return
         }
 
         maxTick = NativeBridge.nativeGetReplayMaxTick(replayHandle)
-        println("[MCAP] Opened replay: $sessionName, maxTick=$maxTick")
-
+        
         isActive = true
         ReplayState.setReplayActive(true)
         isPlaying = false
         tick = 0
         
-        // Apply tick 0 packets to restore initial world state
+        // Apply first tick to set initial position before applying world state
         val client = MinecraftClient.getInstance()
+        val firstRecord = NativeBridge.nativeReadTick(replayHandle, 0)
+        if (firstRecord.isNotEmpty()) {
+            val buf = ByteBuffer.wrap(firstRecord).order(ByteOrder.LITTLE_ENDIAN)
+            buf.short // flags
+            buf.get() // hotbar
+            buf.get() // pad
+            buf.short // yaw
+            buf.short // pitch
+            buf.int // tick
+            val x = buf.float
+            val y = buf.float
+            val z = buf.float
+                    }
+        
+        // Apply tick 0 packets to restore initial world state
         applyPacketsForTick(client, 0)
-        println("[MCAP] Applied initial world state (tick 0 packets)")
-    }
+            }
     
     fun nextSession() {
-        if (!isActive || availableSessions.isEmpty()) return
+        if (!isActive || availableSessions.isEmpty()) {
+                        return
+        }
         selectedSessionIndex = (selectedSessionIndex + 1) % availableSessions.size
-        openSelectedSession()
+                openSelectedSession()
     }
     
     fun prevSession() {
-        if (!isActive || availableSessions.isEmpty()) return
+        if (!isActive || availableSessions.isEmpty()) {
+                        return
+        }
         selectedSessionIndex = (selectedSessionIndex - 1 + availableSessions.size) % availableSessions.size
-        openSelectedSession()
+                openSelectedSession()
     }
 
     fun stop() {
@@ -135,7 +145,9 @@ class ReplayController {
     fun onClientTick(client: MinecraftClient) {
         if (!isActive) return
         if (!isPlaying) return
+        
         applyRecordedTick(client)
+        applyPacketsForTick(client, tick)
         tick++
         if (tick > maxTick) {
             tick = 0 // Loop replay
@@ -146,16 +158,10 @@ class ReplayController {
 
     private fun applyRecordedTick(client: MinecraftClient) {
         val player = client.player ?: return
-        if (replayHandle < 0) {
-            println("[MCAP] applyRecordedTick: invalid handle")
-            return
-        }
+        if (replayHandle < 0) return
 
         val record = NativeBridge.nativeReadTick(replayHandle, tick)
-        if (record.isEmpty()) {
-            println("[MCAP] applyRecordedTick: empty record for tick $tick")
-            return
-        }
+        if (record.isEmpty()) return
 
         // Parse record (28 bytes):
         // u16 flags (0-1), u8 hotbar (2), u8 pad (3)
@@ -177,10 +183,8 @@ class ReplayController {
         val yaw = yawFp.toFloat() / 100.0f
         val pitch = pitchFp.toFloat() / 100.0f
         
-        // Debug: log yaw/pitch values
-        if (tick % 20 == 0) {
-            println("[MCAP] Replay tick $tick: yaw=$yaw, pitch=$pitch, pos=($x, $y, $z)")
-        }
+        // Validate position - skip if invalid
+        if (x.isNaN() || y.isNaN() || z.isNaN() || (x == 0f && y == 0f && z == 0f)) return
 
         // Teleport player to recorded position (use refreshPositionAndAngles for proper sync)
         val xd = x.toDouble()
@@ -229,8 +233,36 @@ class ReplayController {
             player.inventory.selectedSlot = hotbar
         }
         
+        // Handle screen state from flags (bit 7)
+        val screenOpen = (flags and (1 shl 7)) != 0
+        handleScreenState(client, player, screenOpen)
+        
+        // Handle arm swing from flags (bit 8)
+        val armSwinging = (flags and (1 shl 8)) != 0
+        if (armSwinging && !player.handSwinging) {
+            player.swingHand(net.minecraft.util.Hand.MAIN_HAND)
+        }
+        
         // Apply packets for this tick
         applyPacketsForTick(client, tick)
+    }
+    
+    // Track previous screen state to detect changes
+    private var wasScreenOpen = false
+    
+    private fun handleScreenState(client: MinecraftClient, player: net.minecraft.client.network.ClientPlayerEntity, screenOpen: Boolean) {
+        if (screenOpen && !wasScreenOpen) {
+            // Screen just opened - open player inventory if no other screen is open
+            if (client.currentScreen == null) {
+                client.setScreen(net.minecraft.client.gui.screen.ingame.InventoryScreen(player))
+            }
+        } else if (!screenOpen && wasScreenOpen) {
+            // Screen just closed
+            if (client.currentScreen != null) {
+                client.setScreen(null)
+            }
+        }
+        wasScreenOpen = screenOpen
     }
     
     // Packet type IDs (must match PacketCaptureMixin.java)
@@ -246,6 +278,9 @@ class ReplayController {
         private const val PKT_HEALTH_UPDATE = 11
         private const val PKT_EXPERIENCE_UPDATE = 12
         private const val PKT_WORLD_TIME = 13
+        private const val PKT_ENTITY_ANIMATION = 14
+        private const val PKT_BLOCK_BREAK_PROGRESS = 15
+        private const val PKT_CLIENT_BLOCK_BREAK_PROGRESS = 16
     }
     
     private fun applyPacketsForTick(client: MinecraftClient, tick: Int) {
@@ -318,8 +353,14 @@ class ReplayController {
             }
             
             PKT_OPEN_SCREEN -> {
-                // For now, just log - opening screens requires more complex handling
-                println("[MCAP] OpenScreen packet at tick $tick")
+                // Open screen (chest, crafting table, etc.)
+                val packet = OpenScreenS2CPacket(pktBuf)
+                // The client will handle opening the screen when it receives the packet
+                // We need to simulate the packet being received
+                val handler = client.networkHandler
+                if (handler != null) {
+                    handler.onOpenScreen(packet)
+                }
             }
             
             PKT_CLOSE_SCREEN -> {
@@ -368,6 +409,49 @@ class ReplayController {
                 val world = client.world
                 if (world != null) {
                     world.timeOfDay = packet.time
+                }
+            }
+            
+            PKT_ENTITY_ANIMATION -> {
+                // Entity animation (arm swing, damage, etc.)
+                val packet = EntityAnimationS2CPacket(pktBuf)
+                val world = client.world
+                if (world != null) {
+                    val entity = world.getEntityById(packet.id)
+                    if (entity != null) {
+                        // Apply animation - 0 = swing main hand, 3 = swing offhand
+                        entity.handleStatus(packet.animationId.toByte())
+                    }
+                }
+            }
+            
+            PKT_BLOCK_BREAK_PROGRESS -> {
+                // Block breaking progress (mining animation) - from server packets
+                val packet = BlockBreakingProgressS2CPacket(pktBuf)
+                val world = client.world
+                if (world != null) {
+                    // -1 progress means stop breaking, 0-9 is progress
+                    println("[MCAP] Block break progress: entityId=${packet.entityId}, pos=${packet.pos}, progress=${packet.progress}")
+                    world.setBlockBreakingInfo(packet.entityId, packet.pos, packet.progress)
+                }
+            }
+            
+            PKT_CLIENT_BLOCK_BREAK_PROGRESS -> {
+                // Client-side block breaking progress (local player in singleplayer)
+                // Format: x (4), y (4), z (4), stage (1) = 13 bytes
+                val dataBuf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+                val x = dataBuf.int
+                val y = dataBuf.int
+                val z = dataBuf.int
+                val stage = dataBuf.get().toInt()
+                
+                val pos = net.minecraft.util.math.BlockPos(x, y, z)
+                val world = client.world
+                val player = client.player
+                if (world != null && player != null) {
+                    println("[MCAP] Client block break replay: pos=$pos, stage=$stage")
+                    // Use player's entity ID for the breaking info
+                    world.setBlockBreakingInfo(player.id, pos, stage)
                 }
             }
         }
