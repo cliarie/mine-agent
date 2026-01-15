@@ -437,10 +437,8 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeReadP
 
         offset += data_len;
         
-        // Early exit if we've passed the requested tick (packets are ordered by tick)
-        if pkt_tick > tick as u32 {
-            break;
-        }
+        // Note: We can't do early exit because packets may not be strictly ordered
+        // (e.g., when rejoining a world, tick counter resets)
     }
 
     if result.is_empty() {

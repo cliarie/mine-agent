@@ -6,6 +6,7 @@
   "client": [
     "EntityPrevAnglesAccessor",
     "ClientPlayNetworkHandlerMixin",
+    "ClientPlayerEntityMixin",
     "ClientPlayerInteractionManagerMixin",
     "PacketCaptureMixin",
     "PlayerEntityMixin",

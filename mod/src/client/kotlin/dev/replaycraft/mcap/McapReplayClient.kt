@@ -69,6 +69,8 @@ object McapReplayClient : ClientModInitializer {
             val toggleKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
             if (toggleKeyDown && !lastToggleKeyState) {
                 if (!replay.isActive) {
+                    // Flush capture data before starting replay
+                    writer.flush()
                     replay.start()
                 } else {
                     replay.stop()

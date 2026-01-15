@@ -77,6 +77,7 @@ class ReplayController {
         }
 
         maxTick = NativeBridge.nativeGetReplayMaxTick(replayHandle)
+        println("[MCAP] Opened session: $sessionName, maxTick=$maxTick")
         
         isActive = true
         ReplayState.setReplayActive(true)
@@ -142,18 +143,43 @@ class ReplayController {
         if (tick > maxTick) tick = maxTick
     }
 
+    // Track pending arm swing to apply after tick processing
+    private var pendingArmSwing: net.minecraft.util.Hand? = null
+    
     fun onClientTick(client: MinecraftClient) {
         if (!isActive) return
         if (!isPlaying) return
         
+        // Log progress every 100 ticks
+        if (tick % 100 == 0) {
+            println("[MCAP] Replay progress: tick $tick / $maxTick")
+        }
+        
         applyRecordedTick(client)
         applyPacketsForTick(client, tick)
+        
+        // Manually tick the hand swing animation since the player's tick might not be running
+        val player = client.player
+        if (player != null && player.handSwinging) {
+            player.handSwingTicks++
+            // Hand swing duration is typically 6 ticks
+            if (player.handSwingTicks >= 6) {
+                player.handSwingTicks = 0
+                player.handSwinging = false
+            }
+        }
+        
         tick++
         if (tick > maxTick) {
+            println("[MCAP] Replay looping from tick $maxTick back to 0")
             tick = 0 // Loop replay
             // Restore initial world state when looping
             applyPacketsForTick(client, 0)
         }
+    }
+    
+    fun setPendingArmSwing(hand: net.minecraft.util.Hand) {
+        pendingArmSwing = hand
     }
 
     private fun applyRecordedTick(client: MinecraftClient) {
@@ -281,6 +307,10 @@ class ReplayController {
         private const val PKT_ENTITY_ANIMATION = 14
         private const val PKT_BLOCK_BREAK_PROGRESS = 15
         private const val PKT_CLIENT_BLOCK_BREAK_PROGRESS = 16
+        private const val PKT_CLIENT_ARM_SWING = 17
+        private const val PKT_CLIENT_ATTACK_ENTITY = 18
+        private const val PKT_ENTITY_STATUS = 19
+        private const val PKT_ENTITIES_DESTROY = 20
     }
     
     private fun applyPacketsForTick(client: MinecraftClient, tick: Int) {
@@ -299,6 +329,11 @@ class ReplayController {
             
             val packetData = ByteArray(dataLen)
             buf.get(packetData)
+            
+            // Debug: log ARM_SWING packets
+            if (packetId == PKT_CLIENT_ARM_SWING) {
+                println("[MCAP] Processing ARM_SWING packet at tick $tick")
+            }
             
             try {
                 applyPacket(client, packetId, packetData)
@@ -383,6 +418,10 @@ class ReplayController {
                 val state = packet.state
                 val world = client.world
                 if (world != null) {
+                    // Debug: log air block updates (block destruction)
+                    if (state.isAir) {
+                        println("[MCAP] Replay: Block destroyed at $pos")
+                    }
                     world.setBlockState(pos, state, 3) // 3 = send to clients
                 }
             }
@@ -418,9 +457,12 @@ class ReplayController {
                 val world = client.world
                 if (world != null) {
                     val entity = world.getEntityById(packet.id)
-                    if (entity != null) {
-                        // Apply animation - 0 = swing main hand, 3 = swing offhand
-                        entity.handleStatus(packet.animationId.toByte())
+                    if (entity is net.minecraft.entity.LivingEntity) {
+                        // Animation IDs: 0 = swing main hand, 3 = swing offhand
+                        when (packet.animationId) {
+                            0 -> entity.swingHand(net.minecraft.util.Hand.MAIN_HAND, true)
+                            3 -> entity.swingHand(net.minecraft.util.Hand.OFF_HAND, true)
+                        }
                     }
                 }
             }
@@ -440,18 +482,78 @@ class ReplayController {
                 // Client-side block breaking progress (local player in singleplayer)
                 // Format: x (4), y (4), z (4), stage (1) = 13 bytes
                 val dataBuf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
-                val x = dataBuf.int
-                val y = dataBuf.int
-                val z = dataBuf.int
+                val bx = dataBuf.int
+                val by = dataBuf.int
+                val bz = dataBuf.int
                 val stage = dataBuf.get().toInt()
                 
-                val pos = net.minecraft.util.math.BlockPos(x, y, z)
+                val pos = net.minecraft.util.math.BlockPos(bx, by, bz)
                 val world = client.world
-                val player = client.player
-                if (world != null && player != null) {
-                    println("[MCAP] Client block break replay: pos=$pos, stage=$stage")
+                val replayPlayer = client.player
+                if (world != null && replayPlayer != null) {
                     // Use player's entity ID for the breaking info
-                    world.setBlockBreakingInfo(player.id, pos, stage)
+                    world.setBlockBreakingInfo(replayPlayer.id, pos, stage)
+                }
+            }
+            
+            PKT_CLIENT_ARM_SWING -> {
+                // Client-side arm swing
+                // Format: hand (1) = 1 byte
+                val hand = if (data.isNotEmpty() && data[0].toInt() == 1) {
+                    net.minecraft.util.Hand.OFF_HAND
+                } else {
+                    net.minecraft.util.Hand.MAIN_HAND
+                }
+                val replayPlayer = client.player
+                if (replayPlayer != null) {
+                    val beforeSwinging = replayPlayer.handSwinging
+                    val beforeTicks = replayPlayer.handSwingTicks
+                    
+                    // Trigger the arm swing animation
+                    replayPlayer.swingHand(hand, true)
+                    
+                    val afterSwinging = replayPlayer.handSwinging
+                    val afterTicks = replayPlayer.handSwingTicks
+                    println("[MCAP] ARM_SWING: before(swinging=$beforeSwinging, ticks=$beforeTicks) after(swinging=$afterSwinging, ticks=$afterTicks)")
+                }
+            }
+            
+            PKT_CLIENT_ATTACK_ENTITY -> {
+                // Client-side entity attack
+                // Format: entityId (4), hand (1) = 5 bytes
+                if (data.size >= 4) {
+                    val dataBuf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+                    val entityId = dataBuf.int
+                    val world = client.world
+                    val replayPlayer = client.player
+                    if (world != null && replayPlayer != null) {
+                        val entity = world.getEntityById(entityId)
+                        // Entity might not exist anymore, but we still swing
+                        replayPlayer.swingHand(net.minecraft.util.Hand.MAIN_HAND, true)
+                    }
+                }
+            }
+            
+            PKT_ENTITY_STATUS -> {
+                // Entity status (death, damage effects, etc.)
+                val packet = net.minecraft.network.packet.s2c.play.EntityStatusS2CPacket(pktBuf)
+                val world = client.world
+                if (world != null) {
+                    val entity = packet.getEntity(world)
+                    if (entity != null) {
+                        entity.handleStatus(packet.status)
+                    }
+                }
+            }
+            
+            PKT_ENTITIES_DESTROY -> {
+                // Entity destruction (when entities are removed/killed)
+                val packet = net.minecraft.network.packet.s2c.play.EntitiesDestroyS2CPacket(pktBuf)
+                val world = client.world
+                if (world != null) {
+                    for (entityId in packet.entityIds) {
+                        world.removeEntity(entityId, net.minecraft.entity.Entity.RemovalReason.KILLED)
+                    }
                 }
             }
         }

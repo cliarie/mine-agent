@@ -10,9 +10,13 @@ class CaptureWriter(
     private val baseDir: String,
 ) {
     @Volatile private var running = true
+    @Volatile private var sessionHandle: Long = -1
+    private val flushLock = Object()
+    @Volatile private var flushRequested = false
+    @Volatile private var flushComplete = false
 
     private val thread = Thread({
-        val handle = NativeBridge.nativeInitSession(NativeBridge.defaultManifestJson(), baseDir)
+        sessionHandle = NativeBridge.nativeInitSession(NativeBridge.defaultManifestJson(), baseDir)
         var currentStartTick = -1
 
         val tickBatch = ByteArray(4096)
@@ -21,6 +25,8 @@ class CaptureWriter(
         PacketCapture.startCapture()
 
         while (running) {
+            val handle = sessionHandle
+            
             // Drain tick data
             val drained = buffer.drainToByteArray(tickBatch)
             if (drained > 0) {
@@ -38,10 +44,24 @@ class CaptureWriter(
             if (drained == 0 && packetData.isEmpty()) {
                 try { Thread.sleep(2) } catch (_: InterruptedException) {}
             }
+            
+            // Check if flush requested
+            if (flushRequested) {
+                synchronized(flushLock) {
+                    // Close current session to flush all data
+                    NativeBridge.nativeCloseSession(sessionHandle)
+                    // Open a new session
+                    sessionHandle = NativeBridge.nativeInitSession(NativeBridge.defaultManifestJson(), baseDir)
+                    currentStartTick = -1
+                    flushComplete = true
+                    flushRequested = false
+                    flushLock.notifyAll()
+                }
+            }
         }
 
         PacketCapture.stopCapture()
-        NativeBridge.nativeCloseSession(handle)
+        NativeBridge.nativeCloseSession(sessionHandle)
     }, "mcap-writer")
 
     fun start() {
@@ -52,5 +72,26 @@ class CaptureWriter(
     fun stop() {
         running = false
         thread.interrupt()
+    }
+    
+    /**
+     * Flush all pending data to disk by closing and reopening the session.
+     * This blocks until the flush is complete.
+     */
+    fun flush() {
+        if (!running) return
+        synchronized(flushLock) {
+            flushComplete = false
+            flushRequested = true
+            // Wait for flush to complete (max 2 seconds)
+            val startTime = System.currentTimeMillis()
+            while (!flushComplete && System.currentTimeMillis() - startTime < 2000) {
+                try {
+                    flushLock.wait(100)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+        }
     }
 }

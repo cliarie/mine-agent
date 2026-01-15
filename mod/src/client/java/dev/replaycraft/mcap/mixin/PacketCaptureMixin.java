@@ -35,6 +35,8 @@ public class PacketCaptureMixin {
     private static final int PKT_WORLD_TIME = 13;
     private static final int PKT_ENTITY_ANIMATION = 14;
     private static final int PKT_BLOCK_BREAK_PROGRESS = 15;
+    private static final int PKT_ENTITY_STATUS = 19;
+    private static final int PKT_ENTITIES_DESTROY = 20;
 
     // Inventory slot updates (chest, crafting, etc.)
     @Inject(method = "onScreenHandlerSlotUpdate", at = @At("HEAD"))
@@ -148,6 +150,11 @@ public class PacketCaptureMixin {
             double distance = Math.sqrt(playerPos.getSquaredDistance(blockPos));
             if (distance > BLOCK_CAPTURE_RADIUS) return;
             
+            // Debug: log block updates (especially air blocks which indicate destruction)
+            if (packet.getState().isAir()) {
+                System.out.println("[MCAP] Block destroyed at " + blockPos);
+            }
+            
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
             packet.write(buf);
             byte[] data = new byte[buf.readableBytes()];
@@ -251,6 +258,38 @@ public class PacketCaptureMixin {
             buf.release();
             System.out.println("[MCAP] Capturing block break: entityId=" + packet.getEntityId() + ", pos=" + packet.getPos() + ", progress=" + packet.getProgress());
             PacketCapture.capturePacket(PKT_BLOCK_BREAK_PROGRESS, data);
+        } catch (Exception e) {
+            // Ignore
+        }
+    }
+    
+    // Entity status (death, damage effects, etc.)
+    @Inject(method = "onEntityStatus", at = @At("HEAD"))
+    private void mcap_onEntityStatus(EntityStatusS2CPacket packet, CallbackInfo ci) {
+        if (!PacketCapture.isCapturing()) return;
+        try {
+            PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
+            packet.write(buf);
+            byte[] data = new byte[buf.readableBytes()];
+            buf.readBytes(data);
+            buf.release();
+            PacketCapture.capturePacket(PKT_ENTITY_STATUS, data);
+        } catch (Exception e) {
+            // Ignore
+        }
+    }
+    
+    // Entity destruction (when entities are removed/killed)
+    @Inject(method = "onEntitiesDestroy", at = @At("HEAD"))
+    private void mcap_onEntitiesDestroy(EntitiesDestroyS2CPacket packet, CallbackInfo ci) {
+        if (!PacketCapture.isCapturing()) return;
+        try {
+            PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
+            packet.write(buf);
+            byte[] data = new byte[buf.readableBytes()];
+            buf.readBytes(data);
+            buf.release();
+            PacketCapture.capturePacket(PKT_ENTITIES_DESTROY, data);
         } catch (Exception e) {
             // Ignore
         }

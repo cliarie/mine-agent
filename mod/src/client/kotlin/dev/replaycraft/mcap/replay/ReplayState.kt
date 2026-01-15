@@ -12,5 +12,6 @@ object ReplayState {
         replayActive = active
     }
     
+    @JvmStatic
     fun isReplayActive(): Boolean = replayActive
 }
