@@ -176,9 +176,9 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeInitS
         session_dir,
         chunks_dir,
         db,
-        chunk_ticks: 400,  // 20 seconds at 20Hz
-        record_size: 28,   // must match JVM packed record (with position)
-        pending: Vec::with_capacity(400 * 28),
+            chunk_ticks: 400,  // 20 seconds at 20Hz
+            record_size: 48,   // enhanced format: flags, mouse, position, health, velocity, cursor
+            pending: Vec::with_capacity(400 * 48),
         pending_start_tick: -1,
         next_chunk_index: 0,
     };
@@ -252,8 +252,13 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeAppen
         .open(&packets_path)
         .unwrap();
     
-    use std::io::Write;
     file.write_all(&buf[0..len]).unwrap();
+
+    // Write version marker for new packet format (v2: includes timestamp_ms)
+    let marker_path = session.session_dir.join("packets_v2.marker");
+    if !marker_path.exists() {
+        let _ = fs::write(&marker_path, b"v2");
+    }
 }
 
 #[no_mangle]
@@ -308,7 +313,7 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeOpenR
         session_dir,
         chunks_dir,
         db,
-        record_size: 28,
+        record_size: 48,
         max_tick,
     };
 
@@ -388,7 +393,9 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeReadT
 }
 
 /// Read all packets for a specific tick from packets.bin
-/// Returns array of packets, each packet format: u16 packetId, u16 dataLen, data[]
+/// Supports both old format (u32 tick, u16 packetId, u16 dataLen, data[])
+/// and new format (u32 tick, u32 timestamp_ms, u16 packetId, u16 dataLen, data[])
+/// Returns array of packets: u16 packetId, u16 dataLen, data[]
 #[no_mangle]
 pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeReadPacketsForTick<'local>(
     mut env: JNIEnv<'local>,
@@ -412,33 +419,42 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeReadP
         Err(_) => return env.new_byte_array(0).unwrap(),
     };
 
-    // Parse packets and collect those matching the requested tick
-    // Format: u32 tick, u16 packetId, u16 dataLen, data[]
+    // Detect format: new format has u32 tick + u32 timestamp_ms + u16 packetId + u16 dataLen (=12 byte header)
+    // old format has u32 tick + u16 packetId + u16 dataLen (=8 byte header)
+    // We detect by checking if a version marker file exists
+    let is_new_format = session.session_dir.join("packets_v2.marker").exists();
+    let header_size: usize = if is_new_format { 12 } else { 8 };
+
     let mut result: Vec<u8> = Vec::new();
     let mut offset = 0;
 
-    while offset + 8 <= data.len() {
+    while offset + header_size <= data.len() {
         let pkt_tick = u32::from_le_bytes([data[offset], data[offset+1], data[offset+2], data[offset+3]]);
-        let pkt_id = u16::from_le_bytes([data[offset+4], data[offset+5]]);
-        let data_len = u16::from_le_bytes([data[offset+6], data[offset+7]]) as usize;
-        
-        offset += 8;
-        
+
+        let (pkt_id, data_len) = if is_new_format {
+            // Skip timestamp_ms (offset+4..offset+8)
+            let id = u16::from_le_bytes([data[offset+8], data[offset+9]]);
+            let len = u16::from_le_bytes([data[offset+10], data[offset+11]]) as usize;
+            (id, len)
+        } else {
+            let id = u16::from_le_bytes([data[offset+4], data[offset+5]]);
+            let len = u16::from_le_bytes([data[offset+6], data[offset+7]]) as usize;
+            (id, len)
+        };
+
+        offset += header_size;
+
         if offset + data_len > data.len() {
             break;
         }
 
         if pkt_tick == tick as u32 {
-            // Append: u16 packetId, u16 dataLen, data
             result.extend_from_slice(&pkt_id.to_le_bytes());
             result.extend_from_slice(&(data_len as u16).to_le_bytes());
             result.extend_from_slice(&data[offset..offset + data_len]);
         }
 
         offset += data_len;
-        
-        // Note: We can't do early exit because packets may not be strictly ordered
-        // (e.g., when rejoining a world, tick counter resets)
     }
 
     if result.is_empty() {

@@ -57,36 +57,35 @@ fn main() -> io::Result<()> {
         match decompress_size_prepended(payload) {
             Ok(decompressed) => {
                 println!("Decompressed:     {} bytes", decompressed.len());
-                
-                let record_size = 12;
+
+                // Auto-detect record size: try 48 first, fall back to 28
+                let record_size = if decompressed.len() % 48 == 0 { 48 }
+                    else if decompressed.len() % 28 == 0 { 28 }
+                    else { 48 }; // default to new format
                 let num_records = decompressed.len() / record_size;
+                println!("Record size:      {} bytes", record_size);
                 println!("Records:          {}", num_records);
                 println!();
 
                 if show_ticks && num_records > 0 {
                     println!("=== Tick Records ===");
-                    println!("{:>6}  {:>6}  {:>3}  {:>8}  {:>8}  {:>10}", "Index", "Flags", "Hot", "Yaw", "Pitch", "Tick");
-                    println!("{}", "-".repeat(60));
+                    if record_size == 48 {
+                        println!("{:>5}  {:>13}  {:>3} {:>3}  {:>8}  {:>8}  {:>10}  {:>8}  {:>8}  {:>8}  {:>6} {:>3} {:>2}",
+                            "Idx", "Flags", "Hot", "Mse", "Yaw", "Pitch", "Tick", "X", "Y", "Z", "HP", "Fd", "Sc");
+                        println!("{}", "-".repeat(130));
+                    } else {
+                        println!("{:>6}  {:>6}  {:>3}  {:>8}  {:>8}  {:>10}", "Index", "Flags", "Hot", "Yaw", "Pitch", "Tick");
+                        println!("{}", "-".repeat(60));
+                    }
 
                     let max_show = 20.min(num_records);
                     for i in 0..max_show {
                         let off = i * record_size;
                         let flags = u16::from_le_bytes([decompressed[off], decompressed[off + 1]]);
                         let hotbar = decompressed[off + 2];
-                        let yaw_fp = i16::from_le_bytes([decompressed[off + 3], decompressed[off + 4]]);
-                        let pitch_fp = i16::from_le_bytes([decompressed[off + 5], decompressed[off + 6]]);
-                        let tick = u32::from_le_bytes([
-                            decompressed[off + 7],
-                            decompressed[off + 8],
-                            decompressed[off + 9],
-                            decompressed[off + 10],
-                        ]);
-
-                        let yaw = yaw_fp as f32 / 100.0;
-                        let pitch = pitch_fp as f32 / 100.0;
 
                         let flag_str = format!(
-                            "{}{}{}{}{}{}{}",
+                            "{}{}{}{}{}{}{}{}{}{}{}{}{}",
                             if flags & 1 != 0 { "W" } else { "." },
                             if flags & 2 != 0 { "S" } else { "." },
                             if flags & 4 != 0 { "A" } else { "." },
@@ -94,9 +93,39 @@ fn main() -> io::Result<()> {
                             if flags & 16 != 0 { "J" } else { "." },
                             if flags & 32 != 0 { "C" } else { "." },
                             if flags & 64 != 0 { "R" } else { "." },
+                            if flags & 128 != 0 { "I" } else { "." }, // screen open
+                            if flags & 256 != 0 { "H" } else { "." }, // arm swing
+                            if flags & 512 != 0 { "K" } else { "." }, // attack
+                            if flags & 1024 != 0 { "U" } else { "." }, // use
+                            if flags & 2048 != 0 { "G" } else { "." }, // on ground
+                            if flags & 4096 != 0 { "~" } else { "." }, // in water
                         );
 
-                        println!("{:>6}  {:>6}  {:>3}  {:>8.2}  {:>8.2}  {:>10}", i, flag_str, hotbar, yaw, pitch, tick);
+                        if record_size == 48 {
+                            let mouse_btn = decompressed[off + 3];
+                            let yaw_fp = i16::from_le_bytes([decompressed[off + 4], decompressed[off + 5]]);
+                            let pitch_fp = i16::from_le_bytes([decompressed[off + 6], decompressed[off + 7]]);
+                            let tick = u32::from_le_bytes([decompressed[off + 8], decompressed[off + 9], decompressed[off + 10], decompressed[off + 11]]);
+                            let x = f32::from_le_bytes([decompressed[off + 12], decompressed[off + 13], decompressed[off + 14], decompressed[off + 15]]);
+                            let y = f32::from_le_bytes([decompressed[off + 16], decompressed[off + 17], decompressed[off + 18], decompressed[off + 19]]);
+                            let z = f32::from_le_bytes([decompressed[off + 20], decompressed[off + 21], decompressed[off + 22], decompressed[off + 23]]);
+                            let health = f32::from_le_bytes([decompressed[off + 24], decompressed[off + 25], decompressed[off + 26], decompressed[off + 27]]);
+                            let food = decompressed[off + 28];
+                            let screen_type = decompressed[off + 29];
+
+                            let yaw = yaw_fp as f32 / 100.0;
+                            let pitch = pitch_fp as f32 / 100.0;
+
+                            println!("{:>5}  {:>13}  {:>3} {:>3}  {:>8.2}  {:>8.2}  {:>10}  {:>8.1}  {:>8.1}  {:>8.1}  {:>6.1} {:>3} {:>2}",
+                                i, flag_str, hotbar, mouse_btn, yaw, pitch, tick, x, y, z, health, food, screen_type);
+                        } else {
+                            let yaw_fp = i16::from_le_bytes([decompressed[off + 3], decompressed[off + 4]]);
+                            let pitch_fp = i16::from_le_bytes([decompressed[off + 5], decompressed[off + 6]]);
+                            let tick = u32::from_le_bytes([decompressed[off + 7], decompressed[off + 8], decompressed[off + 9], decompressed[off + 10]]);
+                            let yaw = yaw_fp as f32 / 100.0;
+                            let pitch = pitch_fp as f32 / 100.0;
+                            println!("{:>6}  {:>6}  {:>3}  {:>8.2}  {:>8.2}  {:>10}", i, flag_str, hotbar, yaw, pitch, tick);
+                        }
                     }
 
                     if num_records > max_show {

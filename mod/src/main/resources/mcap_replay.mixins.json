@@ -4,6 +4,7 @@
   "package": "dev.replaycraft.mcap.mixin",
   "compatibilityLevel": "JAVA_17",
   "client": [
+    "ClientConnectionAccessor",
     "EntityPrevAnglesAccessor",
     "ClientPlayNetworkHandlerMixin",
     "ClientPlayerEntityMixin",

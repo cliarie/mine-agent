@@ -1,7 +1,7 @@
 package dev.replaycraft.mcap
 
-import dev.replaycraft.mcap.capture.InitialWorldCapture
 import dev.replaycraft.mcap.capture.PacketCapture
+import dev.replaycraft.mcap.capture.RawPacketCapture
 import dev.replaycraft.mcap.capture.TickRingBuffer
 import dev.replaycraft.mcap.native.NativeBridge
 
@@ -19,10 +19,13 @@ class CaptureWriter(
         sessionHandle = NativeBridge.nativeInitSession(NativeBridge.defaultManifestJson(), baseDir)
         var currentStartTick = -1
 
-        val tickBatch = ByteArray(4096)
+        val tickBatch = ByteArray(buffer.recordSize * 200) // enough for 200 ticks
         
-        // Start packet capture
+        // Start both capture systems:
+        // - PacketCapture: selective mixin-based (legacy, kept for client-side events)
+        // - RawPacketCapture: comprehensive Netty pipeline capture (all S2C packets)
         PacketCapture.startCapture()
+        RawPacketCapture.startCapture()
 
         while (running) {
             val handle = sessionHandle
@@ -35,13 +38,13 @@ class CaptureWriter(
                 currentStartTick += (drained / buffer.recordSize)
             }
             
-            // Drain packet data
-            val packetData = PacketCapture.drainPackets()
-            if (packetData.isNotEmpty()) {
-                NativeBridge.nativeAppendPackets(handle, packetData, packetData.size)
+            // Drain raw packet data from Netty pipeline capture (comprehensive)
+            val rawPacketData = RawPacketCapture.drainPackets()
+            if (rawPacketData.isNotEmpty()) {
+                NativeBridge.nativeAppendPackets(handle, rawPacketData, rawPacketData.size)
             }
             
-            if (drained == 0 && packetData.isEmpty()) {
+            if (drained == 0 && rawPacketData.isEmpty()) {
                 try { Thread.sleep(2) } catch (_: InterruptedException) {}
             }
             
@@ -61,6 +64,7 @@ class CaptureWriter(
         }
 
         PacketCapture.stopCapture()
+        RawPacketCapture.stopCapture()
         NativeBridge.nativeCloseSession(sessionHandle)
     }, "mcap-writer")
 
