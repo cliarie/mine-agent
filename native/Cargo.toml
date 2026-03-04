@@ -15,6 +15,14 @@ path = "src/bin/inspect_cap.rs"
 name = "inspect_packets"
 path = "src/bin/inspect_packets.rs"
 
+[[bin]]
+name = "export_json"
+path = "src/bin/export_json.rs"
+
+[[bin]]
+name = "simulator"
+path = "src/bin/simulator.rs"
+
 [dependencies]
 jni = "0.21"
 rusqlite = { version = "0.31", features = ["bundled"] }

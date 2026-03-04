@@ -1,7 +1,10 @@
 package dev.replaycraft.mcap
 
 import dev.replaycraft.mcap.capture.PacketCapture
+import dev.replaycraft.mcap.capture.RawPacketCapture
+import dev.replaycraft.mcap.capture.RecordingEventHandler
 import dev.replaycraft.mcap.capture.TickRingBuffer
+import dev.replaycraft.mcap.video.VideoRecorder
 import dev.replaycraft.mcap.native.NativeBridge
 import dev.replaycraft.mcap.replay.ReplayController
 import net.fabricmc.api.ClientModInitializer
@@ -27,6 +30,9 @@ object McapReplayClient : ClientModInitializer {
     private lateinit var keyStep: KeyBinding
     private lateinit var keyPrevSession: KeyBinding
     private lateinit var keyNextSession: KeyBinding
+    private lateinit var keyRecordVideo: KeyBinding
+
+    private val videoRecorder = VideoRecorder()
 
     override fun onInitializeClient() {
         NativeBridge.ensureLoaded()
@@ -51,6 +57,9 @@ object McapReplayClient : ClientModInitializer {
         )
         keyNextSession = KeyBindingHelper.registerKeyBinding(
             KeyBinding("key.mcap_replay.next_session", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_RIGHT_BRACKET, "category.mcap_replay")
+        )
+        keyRecordVideo = KeyBindingHelper.registerKeyBinding(
+            KeyBinding("key.mcap_replay.record_video", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_V, "category.mcap_replay")
         )
 
         // Track key states for direct GLFW input (more reliable)
@@ -124,14 +133,15 @@ object McapReplayClient : ClientModInitializer {
             val player = client.player ?: return@EndWorldTick
             if (replay.isActive) return@EndWorldTick
 
-            // Check if we need to capture initial world state (must be on main thread)
-            PacketCapture.checkInitialCapture()
-            
-            // Tick-based client state capture
+            // Tick-based client state capture (enhanced 48-byte format)
             captureBuffer.tryWriteFromClient(client, player)
             
-            // Tick the packet capture system
+            // Inject synthetic packets for local player state (position, equipment, animation)
+            RecordingEventHandler.onPlayerTick()
+            
+            // Tick both capture systems
             PacketCapture.onTick()
+            RawPacketCapture.onTick()
         })
 
         HudRenderCallback.EVENT.register(HudRenderCallback { drawContext, _ ->
