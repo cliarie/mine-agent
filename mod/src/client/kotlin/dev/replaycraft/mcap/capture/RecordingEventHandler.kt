@@ -13,6 +13,7 @@ import net.minecraft.network.PacketByteBuf
 import net.minecraft.network.packet.Packet
 import net.minecraft.network.packet.s2c.play.*
 import net.minecraft.util.Hand
+import net.minecraft.util.collection.DefaultedList
 import net.minecraft.util.math.BlockPos
 
 /**
@@ -56,6 +57,12 @@ object RecordingEventHandler {
     private var ticksSinceLastCorrection = 0
     private val playerItems = Array<ItemStack>(EquipmentSlot.values().size) { ItemStack.EMPTY }
 
+    // Inventory slot tracking for capturing item movements.
+    // PlayerScreenHandler has 46 slots: 0=crafting output, 1-4=crafting input,
+    // 5-8=armor, 9-35=main inventory, 36-44=hotbar, 45=offhand.
+    private var trackedInventory: Array<ItemStack>? = null
+    private var trackedCursorStack: ItemStack = ItemStack.EMPTY
+
     fun reset() {
         lastX = Double.NaN
         lastY = Double.NaN
@@ -69,6 +76,10 @@ object RecordingEventHandler {
         ticksSinceLastCorrection = 0
         hasSpawnedPlayer = false
         playerItems.fill(ItemStack.EMPTY)
+        trackedInventory = null
+        trackedCursorStack = ItemStack.EMPTY
+        trackedContainerSyncId = -1
+        trackedContainerSlots = null
     }
 
     /**
@@ -170,6 +181,7 @@ object RecordingEventHandler {
         if (!hasSpawnedPlayer) {
             hasSpawnedPlayer = true
             spawnExistingEntities()
+            injectInventorySnapshot(player)
         }
 
         // --- Position packet (matching ReplayMod's logic) ---
@@ -319,6 +331,127 @@ object RecordingEventHandler {
         }
         if (player.isSleeping) {
             wasSleeping = true
+        }
+
+        // --- Inventory slot tracking ---
+        // Capture item movements in both client-side inventory (E key) and
+        // server-mediated containers. The server sends ScreenHandlerSlotUpdateS2CPacket
+        // for server-mediated changes, but client-side inventory manipulations
+        // (especially in singleplayer) may not generate visible S2C packets in
+        // the capture pipeline. We inject synthetic slot updates for any changes.
+        captureInventoryChanges(player)
+    }
+
+    /**
+     * Inject a full inventory snapshot as InventoryS2CPacket.
+     * Called at recording start so replay has the initial inventory state.
+     */
+    private fun injectInventorySnapshot(player: PlayerEntity) {
+        try {
+            val handler = player.playerScreenHandler
+            val slotCount = handler.slots.size
+            val contents = DefaultedList.ofSize(slotCount, ItemStack.EMPTY)
+            for (i in 0 until slotCount) {
+                contents[i] = handler.slots[i].stack.copy()
+            }
+            val cursorStack = handler.cursorStack.copy()
+            injectPacket(InventoryS2CPacket(handler.syncId, 0, contents, cursorStack))
+
+            // Initialize tracking state
+            trackedInventory = Array(slotCount) { i -> handler.slots[i].stack.copy() }
+            trackedCursorStack = cursorStack
+        } catch (e: Exception) {
+            println("[MCAP] Failed to inject inventory snapshot: ${e.message}")
+        }
+    }
+
+    /**
+     * Compare current inventory with tracked state and inject
+     * ScreenHandlerSlotUpdateS2CPacket for any changed slots.
+     * This captures item movements in real-time during recording.
+     */
+    private fun captureInventoryChanges(player: PlayerEntity) {
+        try {
+            val handler = player.playerScreenHandler
+            val tracked = trackedInventory ?: return // Not yet initialized
+            val slotCount = handler.slots.size
+
+            // Check each slot for changes
+            for (i in 0 until minOf(slotCount, tracked.size)) {
+                val current = handler.slots[i].stack
+                if (!ItemStack.areEqual(tracked[i], current)) {
+                    tracked[i] = current.copy()
+                    injectPacket(ScreenHandlerSlotUpdateS2CPacket(
+                        handler.syncId, 0, i, current.copy()
+                    ))
+                }
+            }
+
+            // Check cursor stack (item held by mouse)
+            val currentCursor = handler.cursorStack
+            if (!ItemStack.areEqual(trackedCursorStack, currentCursor)) {
+                trackedCursorStack = currentCursor.copy()
+                injectPacket(ScreenHandlerSlotUpdateS2CPacket(
+                    ScreenHandlerSlotUpdateS2CPacket.UPDATE_CURSOR_SYNC_ID,
+                    0, 0, currentCursor.copy()
+                ))
+            }
+
+            // Also track any open container's slot changes
+            val currentScreen = MinecraftClient.getInstance().currentScreen
+            if (currentScreen is net.minecraft.client.gui.screen.ingame.HandledScreen<*>) {
+                val screenHandler = currentScreen.screenHandler
+                if (screenHandler != handler) {
+                    // Different screen handler (chest, crafting table, etc.)
+                    captureContainerChanges(screenHandler)
+                }
+            }
+        } catch (_: Exception) {
+            // Ignore inventory tracking errors
+        }
+    }
+
+    // Track open container slots separately
+    private var trackedContainerSyncId: Int = -1
+    private var trackedContainerSlots: Array<ItemStack>? = null
+
+    /**
+     * Track slot changes in server-mediated containers (chests, crafting tables, etc.).
+     * The server sends slot updates via packets, but we inject extras to ensure
+     * completeness — especially for the initial state when a container first opens.
+     */
+    private fun captureContainerChanges(handler: net.minecraft.screen.ScreenHandler) {
+        try {
+            val syncId = handler.syncId
+            if (syncId != trackedContainerSyncId || trackedContainerSlots == null) {
+                // New container opened — inject full contents
+                trackedContainerSyncId = syncId
+                val slotCount = handler.slots.size
+                trackedContainerSlots = Array(slotCount) { i -> handler.slots[i].stack.copy() }
+
+                // Inject full container contents
+                val contents = DefaultedList.ofSize(slotCount, ItemStack.EMPTY)
+                for (i in 0 until slotCount) {
+                    contents[i] = handler.slots[i].stack.copy()
+                }
+                injectPacket(InventoryS2CPacket(syncId, 0, contents, handler.cursorStack.copy()))
+                return
+            }
+
+            // Check for slot changes in the container
+            val tracked = trackedContainerSlots ?: return
+            val slotCount = handler.slots.size
+            for (i in 0 until minOf(slotCount, tracked.size)) {
+                val current = handler.slots[i].stack
+                if (!ItemStack.areEqual(tracked[i], current)) {
+                    tracked[i] = current.copy()
+                    injectPacket(ScreenHandlerSlotUpdateS2CPacket(
+                        syncId, 0, i, current.copy()
+                    ))
+                }
+            }
+        } catch (_: Exception) {
+            // Ignore container tracking errors
         }
     }
 
