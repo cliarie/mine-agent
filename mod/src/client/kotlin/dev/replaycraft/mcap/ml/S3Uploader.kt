@@ -188,7 +188,7 @@ class S3Uploader {
 
     private fun uploadPart(host: String, s3Key: String, uploadId: String, partNumber: Int, data: ByteArray): String? {
         val now = Instant.now()
-        val queryString = "partNumber=$partNumber&uploadId=$uploadId"
+        val queryString = "partNumber=$partNumber&uploadId=${urlEncode(uploadId)}"
         val url = "https://$host/$s3Key?$queryString"
         val payloadHash = sha256Hex(data)
         val headers = signRequest("PUT", "/$s3Key", host, "application/octet-stream", payloadHash, now, data.size.toLong(), queryString)
@@ -212,7 +212,7 @@ class S3Uploader {
 
     private fun completeMultipart(host: String, s3Key: String, uploadId: String, etags: List<String>): Boolean {
         val now = Instant.now()
-        val queryString = "uploadId=$uploadId"
+        val queryString = "uploadId=${urlEncode(uploadId)}"
         val url = "https://$host/$s3Key?$queryString"
 
         val xml = buildString {
@@ -245,7 +245,7 @@ class S3Uploader {
     private fun abortMultipart(host: String, s3Key: String, uploadId: String) {
         try {
             val now = Instant.now()
-            val queryString = "uploadId=$uploadId"
+            val queryString = "uploadId=${urlEncode(uploadId)}"
             val url = "https://$host/$s3Key?$queryString"
             val payloadHash = sha256Hex(ByteArray(0))
             val headers = signRequest("DELETE", "/$s3Key", host, "", payloadHash, now, 0, queryString)
@@ -259,6 +259,10 @@ class S3Uploader {
             conn.disconnect()
         } catch (_: Exception) {}
     }
+
+    /** URL-encode a value per AWS SigV4 rules (spaces as %20, not +) */
+    private fun urlEncode(value: String): String =
+        java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
     // --- AWS Signature V4 ---
 
