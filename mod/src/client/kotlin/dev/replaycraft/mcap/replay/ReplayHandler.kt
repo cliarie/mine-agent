@@ -10,6 +10,8 @@ import io.netty.util.ReferenceCountUtil
 import io.netty.channel.embedded.EmbeddedChannel
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.screen.DownloadingTerrainScreen
+import net.minecraft.client.gui.screen.ingame.InventoryScreen
+import net.minecraft.client.gui.screen.ingame.CraftingScreen
 import net.minecraft.client.network.ClientLoginNetworkHandler
 import net.minecraft.network.ClientConnection
 import net.minecraft.network.DecoderHandler
@@ -244,12 +246,13 @@ class ReplayHandler {
         guiReady = false
         guiWaitTicks = 0
 
-        // Reset interpolation state for fresh session
+        // Reset interpolation and screen state for fresh session
         prevTickX = Double.NaN
         prevTickY = Double.NaN
         prevTickZ = Double.NaN
         prevTickYaw = Float.NaN
         prevTickPitch = Float.NaN
+        prevScreenType = 0
 
         println("[MCAP] Fake connection established with full ReplayMod pipeline for: $sessionName")
 
@@ -510,6 +513,9 @@ class ReplayHandler {
     private var prevTickYaw = Float.NaN
     private var prevTickPitch = Float.NaN
 
+    // Track previous screen type for detecting open/close transitions
+    private var prevScreenType: Int = 0
+
     /**
      * Apply the 48-byte tick record for position, rotation, hotbar.
      *
@@ -605,12 +611,81 @@ class ReplayHandler {
             player.swingHand(net.minecraft.util.Hand.MAIN_HAND)
         }
 
+        // --- Screen open/close from tick record ---
+        // Read remaining bytes to get to screenType at byte 29
+        // buf position after reading x,y,z is at byte 24
+        // health (24-27), food (28), screenType (29)
+        if (record.size >= 30) {
+            val screenBuf = java.nio.ByteBuffer.wrap(record).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val screenType = (screenBuf.get(29).toInt() and 0xFF)
+
+            if (screenType != prevScreenType) {
+                applyScreenTransition(client, player, prevScreenType, screenType)
+                prevScreenType = screenType
+            }
+        }
+
         // Store this tick's values as "previous" for next tick's interpolation
         prevTickX = xd
         prevTickY = yd
         prevTickZ = zd
         prevTickYaw = yaw
         prevTickPitch = pitch
+    }
+
+    /**
+     * Open/close screens during replay based on the recorded screenType transitions.
+     * screenType values from TickRingBuffer.classifyScreen():
+     *   0=none, 1=inventory, 2=chest, 3=crafting, 4=furnace, 5=enchant,
+     *   6=anvil, 7=brewing, 8=beacon, 9=merchant, 10=hopper, 11=shulker, 12=creative
+     *
+     * For client-side screens (inventory, creative), we directly open the screen.
+     * For server-mediated screens (chest, crafting table, furnace, etc.), the
+     * OpenScreenS2CPacket in the capture data handles it. We still handle the
+     * close transition here for all screen types.
+     */
+    private fun applyScreenTransition(
+        client: MinecraftClient,
+        player: net.minecraft.entity.player.PlayerEntity,
+        oldType: Int,
+        newType: Int
+    ) {
+        try {
+            if (newType == 0 && oldType != 0) {
+                // Screen closed — close whatever is currently open
+                if (client.currentScreen != null) {
+                    client.setScreen(null)
+                }
+            } else if (newType != 0 && oldType == 0) {
+                // Screen opened — open the appropriate screen
+                when (newType) {
+                    1 -> {
+                        // Client-side inventory (E key)
+                        client.setScreen(InventoryScreen(player))
+                    }
+                    12 -> {
+                        // Creative inventory — only works if gamemode is creative
+                        // MC opens CreativeInventoryScreen automatically for creative mode
+                        client.setScreen(InventoryScreen(player))
+                    }
+                    // Types 2-11 are server-mediated (chest, crafting, furnace, etc.)
+                    // They are handled by OpenScreenS2CPacket in the capture data.
+                    // If no packet was captured (edge case), we can't open them
+                    // because we don't have a valid ScreenHandler syncId.
+                }
+            } else if (newType != 0 && oldType != 0 && newType != oldType) {
+                // Screen type changed (e.g., inventory → crafting) without closing.
+                // Close old and open new.
+                client.setScreen(null)
+                when (newType) {
+                    1 -> client.setScreen(InventoryScreen(player))
+                    12 -> client.setScreen(InventoryScreen(player))
+                }
+            }
+        } catch (e: Exception) {
+            // Ignore screen transition errors
+            println("[MCAP] Screen transition error: ${e.message}")
+        }
     }
 
     fun nextSession() {
