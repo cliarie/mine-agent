@@ -163,10 +163,12 @@ object RecordingEventHandler {
         val client = MinecraftClient.getInstance()
         val player = client.player ?: return
 
-        // On first tick, inject spawn packets for player + all existing entities
+        // On first tick, inject spawn packets for all existing entities (creatures).
+        // We do NOT call spawnRecordingPlayer() because this is a first-person replay:
+        // the local player already exists from GameJoinS2CPacket and we don't want
+        // a visible third-person player model blocking the first-person view.
         if (!hasSpawnedPlayer) {
             hasSpawnedPlayer = true
-            spawnRecordingPlayer()
             spawnExistingEntities()
         }
 

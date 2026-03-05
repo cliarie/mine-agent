@@ -19,6 +19,7 @@ import net.minecraft.network.PacketBundler
 import net.minecraft.network.PacketByteBuf
 import net.minecraft.network.PacketEncoder
 import net.minecraft.network.packet.s2c.login.LoginSuccessS2CPacket
+import net.minecraft.client.gui.screen.TitleScreen
 import java.io.File
 import java.time.Duration
 
@@ -368,12 +369,7 @@ class ReplayHandler {
             replayHandle = -1
         }
 
-        // Close the embedded channel
-        channel?.close()
-        channel = null
-        packetSender = null
-        fakeConnection = null
-
+        // Mark replay as inactive BEFORE disconnect so mixins stop interfering
         isActive = false
         ReplayState.setReplayActive(false)
         isPlaying = false
@@ -383,16 +379,51 @@ class ReplayHandler {
         // Clear the bridge reference so McapReplayClient stops checking this handler
         McapReplayClientBridge.clearActiveReplay()
 
-        // Disconnect from the fake world and return to title
+        // Disconnect from the fake world BEFORE closing channel
+        // (client.disconnect() needs the connection to still be functional)
         client.disconnect()
+
+        // Now close the embedded channel
+        channel?.close()
+        channel = null
+        packetSender = null
+        fakeConnection = null
+
+        // Explicitly navigate to title screen in case disconnect didn't
+        client.setScreen(TitleScreen())
 
         println("[MCAP] Replay stopped, returned to title screen")
     }
 
     fun togglePlayPause() {
         if (!isActive) return
+        // If at the end of replay, restart from beginning
+        if (tick >= maxTick) {
+            restartReplay()
+            return
+        }
         isPlaying = !isPlaying
         println("[MCAP] Replay ${if (isPlaying) "playing" else "paused"} at tick $tick")
+    }
+
+    /**
+     * Restart replay from the beginning by re-opening the same session.
+     * This creates a fresh fake connection and re-fires initial packets.
+     */
+    fun restartReplay() {
+        if (!isActive) return
+        println("[MCAP] Restarting replay from beginning...")
+
+        // Close current channel but keep the handler active
+        channel?.close()
+        channel = null
+        packetSender = null
+        fakeConnection = null
+        worldLoaded = false
+        guiReady = false
+
+        // Re-open the same session (creates fresh connection + initial packets)
+        openSelectedSession()
     }
 
     fun stepOneTick(client: MinecraftClient) {
@@ -646,7 +677,9 @@ class ReplayHandler {
         val worldStatus = if (worldLoaded) "World loaded" else "Loading..."
         ctx.drawText(MinecraftClient.getInstance().textRenderer, worldStatus, 8, 32, 0xAAAAAA, true)
 
-        val controls = "G=Play/Pause  .=Step  [/]=Prev/Next  Esc=Exit  V=Video"
+        val atEnd = tick >= maxTick
+        val controls = if (atEnd) "G=Restart  .=Step  [/]=Prev/Next  Esc=Exit  V=Video"
+                       else "G=Play/Pause  .=Step  [/]=Prev/Next  Esc=Exit  V=Video"
         ctx.drawText(MinecraftClient.getInstance().textRenderer, controls, 8, 44, 0xAAAAAA, true)
     }
 
