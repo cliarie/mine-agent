@@ -119,9 +119,9 @@ object RecordingEventHandler {
                 val newPitch = (player.pitch * 256.0f / 360.0f).toInt().toByte()
                 val packet = EntityS2CPacket.RotateAndMoveRelative(
                     player.id,
-                    Math.round(dx * 4096).toShort(),
-                    Math.round(dy * 4096).toShort(),
-                    Math.round(dz * 4096).toShort(),
+                    Math.round(dx * 4096).coerceIn(Short.MIN_VALUE.toLong(), Short.MAX_VALUE.toLong()).toShort(),
+                    Math.round(dy * 4096).coerceIn(Short.MIN_VALUE.toLong(), Short.MAX_VALUE.toLong()).toShort(),
+                    Math.round(dz * 4096).coerceIn(Short.MIN_VALUE.toLong(), Short.MAX_VALUE.toLong()).toShort(),
                     newYaw,
                     newPitch,
                     player.isOnGround
