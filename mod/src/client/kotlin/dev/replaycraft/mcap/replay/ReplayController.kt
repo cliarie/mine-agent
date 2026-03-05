@@ -306,21 +306,55 @@ class ReplayController {
     }
     
     /**
-     * Packets to skip during replay to avoid crashes or unwanted behavior.
-     * Matches ReplayMod's BAD_PACKETS concept.
+     * Whitelist of packets safe to replay while connected to an integrated server.
+     * Using a whitelist instead of a blacklist to avoid crashes from unexpected
+     * packet types (e.g., BundleSplitterPacket which throws AssertionError).
      */
     private fun shouldSkipPacket(packet: net.minecraft.network.packet.Packet<*>): Boolean {
-        return when (packet) {
-            // Skip disconnect - would kick us out
-            is DisconnectS2CPacket -> true
-            // Skip keep alive - not needed for replay
-            is KeepAliveS2CPacket -> true
-            // Skip player position - we set position from tick records
-            is PlayerPositionLookS2CPacket -> true
-            // Skip game join - would reset the client
-            is GameJoinS2CPacket -> true
+        // Whitelist: only allow packets we know are safe to replay
+        val isAllowed = when (packet) {
+            // World state
+            is BlockUpdateS2CPacket -> true
+            is ChunkDeltaUpdateS2CPacket -> true
+            is BlockBreakingProgressS2CPacket -> true
+            is BlockEventS2CPacket -> true
+            is BlockEntityUpdateS2CPacket -> true
+            // Entity animations and status
+            is EntityAnimationS2CPacket -> true
+            is EntityStatusS2CPacket -> true
+            is EntitiesDestroyS2CPacket -> true
+            is EntityEquipmentUpdateS2CPacket -> true
+            is EntityTrackerUpdateS2CPacket -> true
+            is EntityAttachS2CPacket -> true
+            is EntityAttributesS2CPacket -> true
+            // Entity movement
+            is EntityPositionS2CPacket -> true
+            is EntityVelocityUpdateS2CPacket -> true
+            is EntitySetHeadYawS2CPacket -> true
+            is EntityS2CPacket -> true
+            // Inventory and items
+            is InventoryS2CPacket -> true
+            is ScreenHandlerSlotUpdateS2CPacket -> true
+            is OpenScreenS2CPacket -> true
+            is CloseScreenS2CPacket -> true
+            // Player state
+            is HealthUpdateS2CPacket -> true
+            is ExperienceBarUpdateS2CPacket -> true
+            // Effects
+            is PlaySoundS2CPacket -> true
+            is ParticleS2CPacket -> true
+            is WorldEventS2CPacket -> true
+            is EntityDamageS2CPacket -> true
+            // Time and weather
+            is WorldTimeUpdateS2CPacket -> true
+            is GameStateChangeS2CPacket -> true
+            // Chat / overlay
+            is OverlayMessageS2CPacket -> true
+            is TitleS2CPacket -> true
+            is SubtitleS2CPacket -> true
             else -> false
         }
+        return !isAllowed
     }
     
     /**
