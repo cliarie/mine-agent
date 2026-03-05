@@ -24,13 +24,15 @@ public abstract class TitleScreenMixin extends Screen {
     @Inject(method = "init", at = @At("RETURN"))
     private void mcap_addReplayCenterButton(CallbackInfo ci) {
         // Add "Replay Center" button on the title screen
-        // Place it just below the main button group (Singleplayer/Multiplayer/Realms)
-        // Main buttons start at height/4 + 48, each row is 24px apart
-        // Row 0: Singleplayer (height/4 + 48)
-        // Row 1: Multiplayer (height/4 + 72)
-        // Row 2: Realms (height/4 + 96)
-        // We place our button right after at row 3
-        int buttonY = this.height / 4 + 48 + 24 * 3;
+        // Place it below all vanilla buttons with proper spacing.
+        // Vanilla layout (1.20.1 TitleScreen.initWidgetsNormal):
+        //   Row 0: Singleplayer  → height/4 + 48
+        //   Row 1: Multiplayer   → height/4 + 48 + 24
+        //   Row 2: Realms        → height/4 + 48 + 48
+        //   (gap)
+        //   Row 3: Options/Quit  → height/4 + 48 + 72
+        // We place Replay Center one row below Options/Quit:
+        int buttonY = this.height / 4 + 48 + 72 + 24;
         this.addDrawableChild(
             ButtonWidget.builder(
                 Text.literal("Replay Center"),

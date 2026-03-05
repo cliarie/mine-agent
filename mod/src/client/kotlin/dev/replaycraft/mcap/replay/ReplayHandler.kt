@@ -2,6 +2,7 @@ package dev.replaycraft.mcap.replay
 
 import dev.replaycraft.mcap.mixin.MinecraftClientAccessor
 import dev.replaycraft.mcap.native.NativeBridge
+import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelOutboundHandlerAdapter
 import io.netty.channel.ChannelPromise
@@ -14,7 +15,9 @@ import net.minecraft.network.DecoderHandler
 import net.minecraft.network.NetworkSide
 import net.minecraft.network.NetworkState
 import net.minecraft.network.PacketBundler
+import net.minecraft.network.PacketByteBuf
 import net.minecraft.network.PacketEncoder
+import net.minecraft.network.packet.s2c.login.LoginSuccessS2CPacket
 import java.io.File
 import java.time.Duration
 
@@ -30,12 +33,13 @@ import java.time.Duration
  *    -> packet_handler (ClientConnection)
  * 3. Set network state to LOGIN, install ClientLoginNetworkHandler
  * 4. Set it as MinecraftClient's active connection
- * 5. Fire raw ByteBuf packets through channel.pipeline().fireChannelRead()
+ * 5. Synthesize a LoginSuccessS2CPacket (not in capture data since we start
+ *    recording at PLAY state) and fire it to trigger LOGIN->PLAY transition
+ * 6. Fire raw ByteBuf PLAY-state packets through channel.pipeline().fireChannelRead()
  *    - DecoderHandler decodes them into Packet<?> objects
  *    - PacketBundler handles bundle splitting (prevents BundleSplitterPacket crashes)
  *    - ReplayPacketSender filters BAD_PACKETS
  *    - ClientConnection dispatches to the appropriate handler
- * 6. LoginSuccessS2CPacket triggers automatic LOGIN->PLAY state transition
  * 7. GameJoinS2CPacket creates the world and player
  * 8. All subsequent packets are processed naturally
  */
@@ -228,16 +232,65 @@ class ReplayHandler {
 
         println("[MCAP] Fake connection established with full ReplayMod pipeline for: $sessionName")
 
-        // Send the initial batch of packets starting from tick 0.
-        // The replay file should contain LoginSuccessS2CPacket (triggers LOGIN->PLAY transition)
-        // followed by GameJoinS2CPacket (creates the world and player).
-        // These are fired as raw ByteBuf through the pipeline and decoded by DecoderHandler.
+        // Our capture system starts recording at onGameJoin (PLAY state), so there's no
+        // LoginSuccessS2CPacket in the capture data. We must synthesize one to trigger
+        // the LOGIN->PLAY state transition before firing any PLAY-state packets.
+        // Without this, the DecoderHandler tries to decode PLAY packets with the LOGIN
+        // codec (which only has ~5 packet types) and throws IndexOutOfBoundsException.
+        sendSyntheticLoginSuccess(networkManager)
+
+        // Now fire the captured PLAY-state packets (starting with GameJoinS2CPacket)
         sendInitialPackets()
+    }
+
+    /**
+     * Synthesize a LoginSuccessS2CPacket and fire it through the pipeline.
+     * This triggers the LOGIN->PLAY state transition so that subsequent
+     * PLAY-state packets are decoded correctly by the DecoderHandler.
+     *
+     * ReplayMod doesn't need this because they record from connection start
+     * (including LOGIN packets). Our capture starts at onGameJoin (PLAY state).
+     */
+    private fun sendSyntheticLoginSuccess(networkManager: ClientConnection) {
+        val client = MinecraftClient.getInstance()
+        val pipe = channel?.pipeline() ?: return
+
+        // Build a GameProfile for the synthetic LoginSuccessS2CPacket
+        val uuid = try {
+            java.util.UUID.fromString(client.session.uuid)
+        } catch (_: Exception) {
+            java.util.UUID.randomUUID()
+        }
+        val profile = com.mojang.authlib.GameProfile(uuid, client.session.username)
+        val loginSuccessPacket = LoginSuccessS2CPacket(profile)
+
+        // Encode the packet into MC wire format for LOGIN state CLIENTBOUND.
+        // Wire format: [varint packetId][packet data]
+        // In LOGIN state, LoginSuccessS2CPacket has packet ID 2.
+        val packetBuf = PacketByteBuf(Unpooled.buffer())
+        try {
+            // Write the varint packet ID for LoginSuccessS2CPacket in LOGIN state
+            // MC 1.20.1: LOGIN CLIENTBOUND packet ID 2
+            packetBuf.writeVarInt(2)
+            // Write the packet data
+            loginSuccessPacket.write(packetBuf)
+
+            // Fire through the pipeline - DecoderHandler will decode it,
+            // ClientLoginNetworkHandler.onSuccess() will be called,
+            // which transitions state to PLAY and creates ClientPlayNetworkHandler
+            pipe.fireChannelRead(packetBuf)
+            println("[MCAP] Fired synthetic LoginSuccessS2CPacket, LOGIN->PLAY transition triggered")
+        } catch (e: Exception) {
+            packetBuf.release()
+            println("[MCAP] Failed to fire synthetic LoginSuccessS2CPacket: ${e.message}")
+            e.printStackTrace()
+        }
     }
 
     /**
      * Send packets for initial ticks to bootstrap the world.
      * Fires raw ByteBuf through the pipeline - DecoderHandler decodes them.
+     * These are all PLAY-state packets (the LOGIN->PLAY transition has already happened).
      */
     private fun sendInitialPackets() {
         val sender = packetSender ?: return
