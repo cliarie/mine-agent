@@ -91,6 +91,7 @@ class MlPipeline(private val baseDir: String) {
             tickNumber++
         } catch (e: Exception) {
             // Don't let capture errors crash the game
+            tickNumber++
             if (tickNumber % 1000 == 0) {
                 println("[MCAP-ML] Tick capture error at tick $tickNumber: ${e.message}")
             }
