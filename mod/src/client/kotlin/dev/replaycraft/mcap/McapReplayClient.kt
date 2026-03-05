@@ -75,8 +75,9 @@ object McapReplayClient : ClientModInitializer {
             val window = client.window.handle
 
             // Toggle replay - always use direct GLFW for reliability
+            // Guard: don't process replay keys when a screen (chat, inventory, etc.) is open
             val toggleKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
-            if (toggleKeyDown && !lastToggleKeyState) {
+            if (toggleKeyDown && !lastToggleKeyState && client.currentScreen == null) {
                 if (!replay.isActive) {
                     // Flush capture data before starting replay
                     writer.flush()

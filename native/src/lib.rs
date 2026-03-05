@@ -394,8 +394,8 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeReadT
 
 /// Read all packets for a specific tick from packets.bin
 /// Supports both old format (u32 tick, u16 packetId, u16 dataLen, data[])
-/// and new format (u32 tick, u32 timestamp_ms, u16 packetId, u16 dataLen, data[])
-/// Returns array of packets: u16 packetId, u16 dataLen, data[]
+/// and new format (u32 tick, u32 timestamp_ms, u16 packetId, u32 dataLen, data[])
+/// Returns array of packets: u16 packetId, u32 dataLen, data[]
 #[no_mangle]
 pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeReadPacketsForTick<'local>(
     mut env: JNIEnv<'local>,
@@ -419,11 +419,11 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeReadP
         Err(_) => return env.new_byte_array(0).unwrap(),
     };
 
-    // Detect format: new format has u32 tick + u32 timestamp_ms + u16 packetId + u16 dataLen (=12 byte header)
+    // Detect format: new format has u32 tick + u32 timestamp_ms + u16 packetId + u32 dataLen (=14 byte header)
     // old format has u32 tick + u16 packetId + u16 dataLen (=8 byte header)
     // We detect by checking if a version marker file exists
     let is_new_format = session.session_dir.join("packets_v2.marker").exists();
-    let header_size: usize = if is_new_format { 12 } else { 8 };
+    let header_size: usize = if is_new_format { 14 } else { 8 };
 
     let mut result: Vec<u8> = Vec::new();
     let mut offset = 0;
@@ -434,7 +434,7 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeReadP
         let (pkt_id, data_len) = if is_new_format {
             // Skip timestamp_ms (offset+4..offset+8)
             let id = u16::from_le_bytes([data[offset+8], data[offset+9]]);
-            let len = u16::from_le_bytes([data[offset+10], data[offset+11]]) as usize;
+            let len = u32::from_le_bytes([data[offset+10], data[offset+11], data[offset+12], data[offset+13]]) as usize;
             (id, len)
         } else {
             let id = u16::from_le_bytes([data[offset+4], data[offset+5]]);
@@ -450,7 +450,7 @@ pub extern "system" fn Java_dev_replaycraft_mcap_native_NativeBridge_nativeReadP
 
         if pkt_tick == tick as u32 {
             result.extend_from_slice(&pkt_id.to_le_bytes());
-            result.extend_from_slice(&(data_len as u16).to_le_bytes());
+            result.extend_from_slice(&(data_len as u32).to_le_bytes());
             result.extend_from_slice(&data[offset..offset + data_len]);
         }
 

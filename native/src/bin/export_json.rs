@@ -65,7 +65,7 @@ struct MouseButtons {
 #[derive(Serialize)]
 struct PacketRef {
     id: u16,
-    len: u16,
+    len: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     timestamp_ms: Option<u32>,
 }
@@ -121,7 +121,7 @@ fn main() -> io::Result<()> {
     };
 
     let is_new_format = session_dir.join("packets_v2.marker").exists();
-    let header_size: usize = if is_new_format { 12 } else { 8 };
+    let header_size: usize = if is_new_format { 14 } else { 8 };
 
     // Index packets by tick
     let mut packets_by_tick: HashMap<u32, Vec<PacketRef>> = HashMap::new();
@@ -139,7 +139,7 @@ fn main() -> io::Result<()> {
                     packet_data[offset+6], packet_data[offset+7],
                 ]);
                 let id = u16::from_le_bytes([packet_data[offset+8], packet_data[offset+9]]);
-                let len = u16::from_le_bytes([packet_data[offset+10], packet_data[offset+11]]);
+                let len = u32::from_le_bytes([packet_data[offset+10], packet_data[offset+11], packet_data[offset+12], packet_data[offset+13]]);
                 (id, len as usize, Some(ts))
             } else {
                 let id = u16::from_le_bytes([packet_data[offset+4], packet_data[offset+5]]);
@@ -152,7 +152,7 @@ fn main() -> io::Result<()> {
 
             packets_by_tick.entry(pkt_tick).or_default().push(PacketRef {
                 id: pkt_id,
-                len: data_len as u16,
+                len: data_len as u32,
                 timestamp_ms,
             });
 

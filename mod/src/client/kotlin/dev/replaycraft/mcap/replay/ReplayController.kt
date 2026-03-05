@@ -69,9 +69,17 @@ class ReplayController {
         
         val session = availableSessions[selectedSessionIndex]
         sessionName = session.name
-                
-        replayHandle = NativeBridge.nativeOpenReplay(session.absolutePath)
-        if (replayHandle < 0) return
+        
+        try {
+            replayHandle = NativeBridge.nativeOpenReplay(session.absolutePath)
+        } catch (e: Exception) {
+            println("[MCAP] Failed to open replay session: ${e.message}")
+            return
+        }
+        if (replayHandle < 0) {
+            println("[MCAP] nativeOpenReplay returned invalid handle for $sessionName")
+            return
+        }
 
         maxTick = NativeBridge.nativeGetReplayMaxTick(replayHandle)
         println("[MCAP] Opened session: $sessionName, maxTick=$maxTick")
@@ -81,9 +89,7 @@ class ReplayController {
         isPlaying = false
         tick = 0
         
-        // Apply initial tick and packets
-        val client = MinecraftClient.getInstance()
-        applyPacketsForTick(client, 0)
+        println("[MCAP] Replay ready: $sessionName, maxTick=$maxTick, press G to play")
     }
     
     fun nextSession() {
@@ -130,7 +136,6 @@ class ReplayController {
         }
         
         applyRecordedTick(client)
-        applyPacketsForTick(client, tick)
         
         // Manually tick hand swing animation
         val player = client.player
@@ -146,15 +151,25 @@ class ReplayController {
         if (tick > maxTick) {
             println("[MCAP] Replay looping from tick $maxTick back to 0")
             tick = 0
-            applyPacketsForTick(client, 0)
         }
     }
 
     private fun applyRecordedTick(client: MinecraftClient) {
+        // NOTE: Raw S2C packet replay is disabled for live in-game replay.
+        // Packets from a previous session reference entity IDs, chunk coords, etc.
+        // that don't exist in the current game, causing disconnection/corruption.
+        // For verification, tick records (position/rotation/hotbar) are sufficient.
+        // Full packet replay requires a fake server connection (future work).
+
         val player = client.player ?: return
         if (replayHandle < 0) return
 
-        val record = NativeBridge.nativeReadTick(replayHandle, tick)
+        val record = try {
+            NativeBridge.nativeReadTick(replayHandle, tick)
+        } catch (e: Exception) {
+            println("[MCAP] Error reading tick $tick: ${e.message}")
+            return
+        }
         if (record.isEmpty()) return
 
         // Parse enhanced record (48 bytes):
@@ -227,8 +242,6 @@ class ReplayController {
             player.swingHand(net.minecraft.util.Hand.MAIN_HAND)
         }
         
-        // Apply raw S2C packets for this tick through network handler
-        applyPacketsForTick(client, tick)
     }
     
     /**
@@ -248,9 +261,9 @@ class ReplayController {
         
         val buf = ByteBuffer.wrap(packetsData).order(ByteOrder.LITTLE_ENDIAN)
         
-        while (buf.remaining() >= 4) {
+        while (buf.remaining() >= 6) {
             val packetId = buf.short.toInt() and 0xFFFF
-            val dataLen = buf.short.toInt() and 0xFFFF
+            val dataLen = buf.int
             
             if (buf.remaining() < dataLen) break
             
