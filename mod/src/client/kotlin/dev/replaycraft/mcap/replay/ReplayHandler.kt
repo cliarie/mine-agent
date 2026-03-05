@@ -449,6 +449,13 @@ class ReplayHandler {
     fun onClientTick(client: MinecraftClient) {
         if (!isActive || !worldLoaded) return
 
+        // Ensure cursor is locked (invisible) during replay when no screen is open.
+        // Without this, the cursor can remain visible during normal gameplay view
+        // because the replay setup flow doesn't always trigger Mouse.lockCursor().
+        if (client.currentScreen == null && !client.mouse.isCursorLocked) {
+            client.mouse.lockCursor()
+        }
+
         // Wait for GUI to be ready before starting auto-play.
         // This ensures the terrain is visually rendered before playback begins,
         // not just loaded in the terminal. Matching ReplayMod's approach of
