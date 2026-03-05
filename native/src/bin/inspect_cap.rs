@@ -119,9 +119,9 @@ fn main() -> io::Result<()> {
                             println!("{:>5}  {:>13}  {:>3} {:>3}  {:>8.2}  {:>8.2}  {:>10}  {:>8.1}  {:>8.1}  {:>8.1}  {:>6.1} {:>3} {:>2}",
                                 i, flag_str, hotbar, mouse_btn, yaw, pitch, tick, x, y, z, health, food, screen_type);
                         } else {
-                            let yaw_fp = i16::from_le_bytes([decompressed[off + 4], decompressed[off + 5]]);
-                            let pitch_fp = i16::from_le_bytes([decompressed[off + 6], decompressed[off + 7]]);
-                            let tick = u32::from_le_bytes([decompressed[off + 8], decompressed[off + 9], decompressed[off + 10], decompressed[off + 11]]);
+                            let yaw_fp = i16::from_le_bytes([decompressed[off + 3], decompressed[off + 4]]);
+                            let pitch_fp = i16::from_le_bytes([decompressed[off + 5], decompressed[off + 6]]);
+                            let tick = u32::from_le_bytes([decompressed[off + 7], decompressed[off + 8], decompressed[off + 9], decompressed[off + 10]]);
                             let yaw = yaw_fp as f32 / 100.0;
                             let pitch = pitch_fp as f32 / 100.0;
                             println!("{:>6}  {:>6}  {:>3}  {:>8.2}  {:>8.2}  {:>10}", i, flag_str, hotbar, yaw, pitch, tick);

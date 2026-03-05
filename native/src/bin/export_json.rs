@@ -65,7 +65,7 @@ struct MouseButtons {
 #[derive(Serialize)]
 struct PacketRef {
     id: u16,
-    len: u16,
+    len: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     timestamp_ms: Option<u32>,
 }
@@ -152,7 +152,7 @@ fn main() -> io::Result<()> {
 
             packets_by_tick.entry(pkt_tick).or_default().push(PacketRef {
                 id: pkt_id,
-                len: data_len as u16,
+                len: data_len as u32,
                 timestamp_ms,
             });
 
