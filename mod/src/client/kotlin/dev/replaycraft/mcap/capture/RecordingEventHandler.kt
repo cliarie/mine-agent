@@ -538,12 +538,17 @@ object RecordingEventHandler {
             val packetId = state.getPacketId(NetworkSide.CLIENTBOUND, packet)
             if (packetId < 0) return
 
-            // Re-serialize the packet to get clean data bytes
+            // Re-serialize the packet to get clean data bytes.
+            // Use try/finally to guarantee ByteBuf release even if packet.write() throws.
             val writeBuf = PacketByteBuf(Unpooled.buffer())
-            packet.write(writeBuf)
-            val data = ByteArray(writeBuf.readableBytes())
-            writeBuf.readBytes(data)
-            writeBuf.release()
+            val data: ByteArray
+            try {
+                packet.write(writeBuf)
+                data = ByteArray(writeBuf.readableBytes())
+                writeBuf.readBytes(data)
+            } finally {
+                writeBuf.release()
+            }
 
             val timestampMs = (System.currentTimeMillis() - RawPacketCapture.startTimeMs).toInt()
             RawPacketCapture.queue.add(

@@ -253,6 +253,8 @@ class ReplayHandler {
         prevTickYaw = Float.NaN
         prevTickPitch = Float.NaN
         accumulatedYaw = Float.NaN
+        prevYawFp = 0
+        hasPrevYawFp = false
         prevScreenType = 0
         prevCursorX = Double.NaN
         prevCursorY = Double.NaN
@@ -530,12 +532,15 @@ class ReplayHandler {
     private var prevTickYaw = Float.NaN
     private var prevTickPitch = Float.NaN
 
-    // Track accumulated yaw for unwrapping short-encoded values.
-    // The tick record stores yaw as short/100.0f (range ±327.67°).
+    // Track accumulated yaw for unwrapping i16-encoded values.
+    // The tick record stores yaw as i16(yaw * 100), range ±327.67°.
     // MC yaw can exceed this range with continuous rotation, so consecutive
-    // stored values may wrap (e.g., 327° → -327° for a small turn).
-    // We unwrap by tracking the accumulated yaw and adjusting for wraps.
+    // stored values may wrap at the i16 boundary (e.g., 328° wraps to -327°).
+    // We unwrap by computing deltas using i16 arithmetic (which naturally
+    // wraps at ±32768) and accumulating them.
     private var accumulatedYaw = Float.NaN
+    private var prevYawFp: Short = 0
+    private var hasPrevYawFp = false
 
     // Track previous screen type for detecting open/close transitions
     private var prevScreenType: Int = 0
@@ -580,25 +585,35 @@ class ReplayHandler {
         val y = buf.float
         val z = buf.float
 
-        val rawYaw = yawFp.toFloat() / 100.0f
         val pitch = pitchFp.toFloat() / 100.0f
 
-        // Unwrap yaw to maintain continuity across short encoding boundary.
-        // Without this, a small turn crossing ±327° looks like a 655° spin.
+        // Check position validity BEFORE modifying yaw state.
+        // This prevents accumulatedYaw from advancing while prevTickYaw stays
+        // stale (which would cause a visual rotation jump on the next valid tick).
+        if (x.isNaN() || y.isNaN() || z.isNaN() || (x == 0f && y == 0f && z == 0f)) return
+
+        // Unwrap yaw using i16 delta arithmetic.
+        // The tick record stores yaw as i16(yaw * 100), which wraps at ±32768
+        // (±327.67°). A naive approach using float modulo fails because the
+        // wrapping point is at the i16 boundary, not at ±180°.
+        //
+        // By computing (yawFp - prevYawFp) as a Short, the i16 arithmetic
+        // naturally wraps: a small turn crossing the boundary produces a small
+        // delta. For example, 327° → 329° stored as 32700 → -32636 gives
+        // i16 delta = 200 → 2.00°.
         val yaw: Float
-        if (accumulatedYaw.isNaN()) {
-            accumulatedYaw = rawYaw
-            yaw = rawYaw
+        if (!hasPrevYawFp) {
+            hasPrevYawFp = true
+            prevYawFp = yawFp
+            accumulatedYaw = yawFp.toFloat() / 100.0f
+            yaw = accumulatedYaw
         } else {
-            var delta = rawYaw - (accumulatedYaw % 360.0f)
-            // Normalize delta to [-180, 180]
-            while (delta > 180.0f) delta -= 360.0f
-            while (delta < -180.0f) delta += 360.0f
-            accumulatedYaw += delta
+            val rawDelta = (yawFp - prevYawFp).toShort()
+            val degDelta = rawDelta.toFloat() / 100.0f
+            accumulatedYaw += degDelta
+            prevYawFp = yawFp
             yaw = accumulatedYaw
         }
-
-        if (x.isNaN() || y.isNaN() || z.isNaN() || (x == 0f && y == 0f && z == 0f)) return
 
         val xd = x.toDouble()
         val yd = y.toDouble()
