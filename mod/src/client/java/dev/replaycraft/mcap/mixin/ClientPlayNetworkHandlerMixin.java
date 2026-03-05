@@ -5,6 +5,7 @@ import dev.replaycraft.mcap.capture.RawPacketCapture;
 import io.netty.channel.Channel;
 import net.minecraft.client.network.ClientPlayNetworkHandler;
 import net.minecraft.network.ClientConnection;
+import net.minecraft.network.packet.s2c.play.GameJoinS2CPacket;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -18,9 +19,20 @@ public class ClientPlayNetworkHandlerMixin {
     private ClientConnection connection;
 
     @Inject(method = "onGameJoin", at = @At("HEAD"))
-    private void mcap_onGameJoin(CallbackInfo ci) {
+    private void mcap_onGameJoin(GameJoinS2CPacket packet, CallbackInfo ci) {
+        // Don't interfere with capture system during replay - would corrupt active capture
+        // session by resetting timing, writing replay packets as new data, and installing
+        // pipeline handler on the fake EmbeddedChannel
+        if (dev.replaycraft.mcap.replay.ReplayState.isReplayActive()) return;
+
         PacketCapture.onGameJoin();
         RawPacketCapture.INSTANCE.onGameJoin();
+
+        // Manually capture the GameJoinS2CPacket BEFORE installing the pipeline handler.
+        // The pipeline handler only captures packets that arrive AFTER it's installed,
+        // but GameJoinS2CPacket has already passed through the pipeline by this point.
+        // Without this, the world is never created during replay (null world NPEs).
+        RawPacketCapture.INSTANCE.captureDecodedPacket(packet);
 
         // Install Netty pipeline packet recorder for comprehensive S2C capture.
         // This captures ALL server-to-client packets at the network level,

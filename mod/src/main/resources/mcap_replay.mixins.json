@@ -6,11 +6,13 @@
   "client": [
     "ClientConnectionAccessor",
     "EntityPrevAnglesAccessor",
+    "MinecraftClientAccessor",
     "ClientPlayNetworkHandlerMixin",
     "ClientPlayerEntityMixin",
     "ClientPlayerInteractionManagerMixin",
     "PacketCaptureMixin",
     "PlayerEntityMixin",
+    "TitleScreenMixin",
     "WorldMixin"
   ],
   "injectors": {

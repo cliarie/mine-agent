@@ -1,6 +1,6 @@
 # mine-agent: High-Fidelity Minecraft Gameplay Capture & Replay
 
-A system for recording, replaying, and simulating Minecraft gameplay at tick resolution (20Hz). Inspired by [ReplayMod](https://github.com/ReplayMod/), it captures **all** server-to-client packets at the Netty pipeline level for storage and analysis. Live in-game replay currently shows position, rotation, hotbar, and arm swing from tick records. Full packet-based UI replay (inventory, crafting, chests, etc.) is planned as future work requiring a fake server connection.
+A system for recording, replaying, and simulating Minecraft gameplay at tick resolution (20Hz). Inspired by [ReplayMod](https://github.com/ReplayMod/), it captures **all** server-to-client packets at the Netty pipeline level for storage and analysis. Live in-game replay uses a fake `ClientConnection` + `EmbeddedChannel` (like ReplayMod's `ReplayHandler`) to dispatch all captured S2C packets through the normal Minecraft packet handling pipeline, giving full first-person replay including inventory, crafting, chests, entity updates, block changes, and all UI screens.
 
 ## Architecture
 
@@ -93,11 +93,13 @@ While in-game, press:
 | `V` | Toggle video recording |
 
 During replay, the mod:
-1. Sets player position/rotation from tick records
-2. Applies hotbar slot changes and arm swing animations
-3. Camera follows the recorded first-person perspective
+1. Disconnects from the current world and creates a fake `ClientConnection`
+2. Feeds all captured S2C packets through the normal MC packet handling pipeline
+3. Sets player position/rotation from tick records for smooth first-person camera
+4. Applies hotbar slot changes and arm swing animations
+5. All UI packets (inventory, chests, crafting, etc.) work automatically
 
-**Note:** Live replay currently shows position/rotation/hotbar only. Raw S2C packet replay is captured and stored but not dispatched during live replay (requires a fake server connection to avoid corrupting the active game session). Packet data is available via `export_json` and the simulator.
+This uses the same architecture as ReplayMod's `ReplayHandler`: a fake `ClientConnection` with an `EmbeddedChannel` pipeline, so packets are processed exactly as if coming from a real server. When replay ends, you return to the title screen.
 
 ### Exporting to JSON
 
@@ -193,7 +195,7 @@ Payload:
 
 1. **Netty pipeline capture** (not selective mixins): A `ChannelInboundHandlerAdapter` after the decoder intercepts ALL decoded S2C packets. This matches ReplayMod's approach and ensures no packet types are missed.
 
-2. **Packet capture for analysis**: All S2C packets are captured and stored. Live in-game replay currently uses tick records only (position, rotation, hotbar). Full packet dispatch replay requires a fake server connection to avoid corrupting the active game session (similar to ReplayMod's `ReplayHandler` architecture). Packet data is accessible via `export_json` and the tick-by-tick simulator.
+2. **Full packet replay via fake connection**: All captured S2C packets are dispatched through a fake `ClientConnection` + `EmbeddedChannel` during replay, matching ReplayMod's `ReplayHandler` architecture. This means inventory screens, chest UIs, entity updates, block changes, and all other server-driven state work automatically during replay. A `ReplayPacketSender` (Netty `ChannelDuplexHandler`) whitelists safe packet types and feeds them into the pipeline. Tick records provide position/rotation/hotbar as a secondary overlay for smooth camera tracking.
 
 3. **Synthetic packet injection**: The server never sends the local player their own position/equipment/animation packets. `RecordingEventHandler` injects these as synthetic S2C packets so they appear in the capture stream.
 

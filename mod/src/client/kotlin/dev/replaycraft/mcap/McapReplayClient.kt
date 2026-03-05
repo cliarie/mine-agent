@@ -6,7 +6,7 @@ import dev.replaycraft.mcap.capture.RecordingEventHandler
 import dev.replaycraft.mcap.capture.TickRingBuffer
 import dev.replaycraft.mcap.video.VideoRecorder
 import dev.replaycraft.mcap.native.NativeBridge
-import dev.replaycraft.mcap.replay.ReplayController
+import dev.replaycraft.mcap.replay.McapReplayClientBridge
 import net.fabricmc.api.ClientModInitializer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
@@ -23,9 +23,7 @@ object McapReplayClient : ClientModInitializer {
     private val captureBuffer = TickRingBuffer(capacity = 20 * 120) // ~2 minutes
 
     private lateinit var writer: CaptureWriter
-    private val replay = ReplayController()
 
-    private lateinit var keyToggleReplay: KeyBinding
     private lateinit var keyPlayPause: KeyBinding
     private lateinit var keyStep: KeyBinding
     private lateinit var keyPrevSession: KeyBinding
@@ -43,9 +41,7 @@ object McapReplayClient : ClientModInitializer {
             writer.stop()
         })
 
-        keyToggleReplay = KeyBindingHelper.registerKeyBinding(
-            KeyBinding("key.mcap_replay.toggle", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_R, "category.mcap_replay")
-        )
+        // Replay controls (no R key for starting replay - replay is started from title screen Replay Center)
         keyPlayPause = KeyBindingHelper.registerKeyBinding(
             KeyBinding("key.mcap_replay.playpause", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_G, "category.mcap_replay")
         )
@@ -65,30 +61,27 @@ object McapReplayClient : ClientModInitializer {
         // Track key states for direct GLFW input (more reliable)
         var lastStepKeyState = false
         var lastPlayPauseKeyState = false
-        var lastToggleKeyState = false
         var lastPrevKeyState = false
         var lastNextKeyState = false
+        var lastExitKeyState = false
+        
+        // Track whether player was in a world last tick (to detect disconnect)
+        var wasInWorld = false
         
         // Handle keybindings on client tick
         ClientTickEvents.END_CLIENT_TICK.register(ClientTickEvents.EndTick { _ ->
-            val player = client.player ?: return@EndTick
             val window = client.window.handle
+            val replay = McapReplayClientBridge.getActiveReplay()
 
-            // Toggle replay - always use direct GLFW for reliability
-            // Guard: don't process replay keys when a screen (chat, inventory, etc.) is open
-            val toggleKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
-            if (toggleKeyDown && !lastToggleKeyState && client.currentScreen == null) {
-                if (!replay.isActive) {
-                    // Flush capture data before starting replay
-                    writer.flush()
-                    replay.start()
-                } else {
-                    replay.stop()
-                }
+            // Detect world disconnect: flush capture data so session appears in Replay Center
+            val isInWorld = client.player != null && client.world != null
+            if (wasInWorld && !isInWorld && (replay == null || !replay.isActive)) {
+                println("[MCAP] World disconnected, flushing capture data")
+                writer.flush()
             }
-            lastToggleKeyState = toggleKeyDown
+            wasInWorld = isInWorld
 
-            if (replay.isActive) {
+            if (replay != null && replay.isActive) {
                 // Use direct GLFW key checking for all replay controls (more reliable)
                 
                 // Play/Pause (G)
@@ -119,20 +112,31 @@ object McapReplayClient : ClientModInitializer {
                 }
                 lastNextKeyState = nextKeyDown
 
+                // Exit replay (R key) - return to title screen
+                val exitKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
+                if (exitKeyDown && !lastExitKeyState && client.currentScreen == null) {
+                    lastExitKeyState = exitKeyDown
+                    replay.stop()
+                    return@EndTick
+                }
+                lastExitKeyState = exitKeyDown
+
                 replay.onClientTick(client)
             } else {
-                // Reset states when replay not active
+                // Reset replay control states when replay not active
                 lastPlayPauseKeyState = false
                 lastStepKeyState = false
                 lastPrevKeyState = false
                 lastNextKeyState = false
+                lastExitKeyState = false
             }
         })
 
         // Capture on world tick (true 20Hz game tick rate)
         ClientTickEvents.END_WORLD_TICK.register(ClientTickEvents.EndWorldTick { _ ->
             val player = client.player ?: return@EndWorldTick
-            if (replay.isActive) return@EndWorldTick
+            val replay = McapReplayClientBridge.getActiveReplay()
+            if (replay != null && replay.isActive) return@EndWorldTick
 
             // Tick-based client state capture (enhanced 48-byte format)
             captureBuffer.tryWriteFromClient(client, player)
@@ -146,7 +150,7 @@ object McapReplayClient : ClientModInitializer {
         })
 
         HudRenderCallback.EVENT.register(HudRenderCallback { drawContext, _ ->
-            replay.renderHud(drawContext)
+            McapReplayClientBridge.getActiveReplay()?.renderHud(drawContext)
         })
 
         writer.start()

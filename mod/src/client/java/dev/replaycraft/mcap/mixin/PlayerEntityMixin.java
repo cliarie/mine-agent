@@ -10,17 +10,42 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /**
  * Mixin to adjust player behavior during replay mode.
  *
- * IMPORTANT: We do NOT cancel tick() or sendMovementPackets() because doing so
- * prevents critical entity bookkeeping and causes the integrated server to
- * disconnect the player ("save and quit" behavior). Instead, the replay system
- * overrides position/rotation every tick via ReplayController.applyRecordedTick(),
- * which runs at END_CLIENT_TICK (after the normal tick processing).
+ * With the ReplayHandler (fake connection) approach, we ARE connected to a fake
+ * ClientConnection via an EmbeddedChannel - there is no real server. So we CAN
+ * safely suppress sendMovementPackets() and tickMovement() during replay.
  *
- * The normal tick still processes keyboard input, but the position is immediately
- * overridden by the replay data, so the player visually follows the recording.
+ * tickMovement() MUST be cancelled during replay because it applies client-side
+ * physics (gravity, collision, movement input). Without cancelling it, the player
+ * falls through terrain between tick dispatches because MC applies gravity every
+ * client tick. ReplayMod solves this with a CameraEntity (spectator-like entity);
+ * we solve it by simply cancelling the local physics and letting ReplayHandler
+ * set position/rotation from the captured tick records.
  */
 @Mixin(ClientPlayerEntity.class)
 public class PlayerEntityMixin {
-    // Intentionally empty - tick() and sendMovementPackets() must NOT be cancelled.
-    // See class javadoc for explanation.
+
+    /**
+     * Suppress outgoing movement packets during replay.
+     * With the fake connection there's no server to receive them anyway,
+     * and they would just accumulate in the EmbeddedChannel's outbound buffer.
+     */
+    @Inject(method = "sendMovementPackets", at = @At("HEAD"), cancellable = true)
+    private void mcap_onSendMovementPackets(CallbackInfo ci) {
+        if (ReplayState.INSTANCE.isReplayActive()) {
+            ci.cancel();
+        }
+    }
+
+    /**
+     * Suppress client-side physics (gravity, collision, movement input) during replay.
+     * Without this, the player falls through terrain because MC applies gravity every
+     * client tick, and our position override only runs at END_CLIENT_TICK (after physics).
+     * The ReplayHandler sets position/rotation from captured tick records instead.
+     */
+    @Inject(method = "tickMovement", at = @At("HEAD"), cancellable = true)
+    private void mcap_onTickMovement(CallbackInfo ci) {
+        if (ReplayState.INSTANCE.isReplayActive()) {
+            ci.cancel();
+        }
+    }
 }
