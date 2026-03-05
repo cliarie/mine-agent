@@ -706,6 +706,7 @@ class ReplayHandler {
         channel?.close()
         channel = null
         packetSender = null
+        fakeConnection = null
 
         selectedSessionIndex = (selectedSessionIndex + 1) % availableSessions.size
         openSelectedSession()
@@ -732,6 +733,7 @@ class ReplayHandler {
         channel?.close()
         channel = null
         packetSender = null
+        fakeConnection = null
 
         selectedSessionIndex = (selectedSessionIndex - 1 + availableSessions.size) % availableSessions.size
         openSelectedSession()

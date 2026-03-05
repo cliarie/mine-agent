@@ -27,6 +27,9 @@ public class ClientPlayNetworkHandlerMixin {
 
         PacketCapture.onGameJoin();
         RawPacketCapture.INSTANCE.onGameJoin();
+        // Reset recording state so spawnExistingEntities() and injectInventorySnapshot()
+        // fire for each new session (not just the first one after client start)
+        dev.replaycraft.mcap.capture.RecordingEventHandler.INSTANCE.reset();
 
         // Manually capture the GameJoinS2CPacket BEFORE installing the pipeline handler.
         // The pipeline handler only captures packets that arrive AFTER it's installed,

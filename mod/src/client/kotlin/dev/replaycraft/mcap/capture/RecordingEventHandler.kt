@@ -214,10 +214,10 @@ object RecordingEventHandler {
         // ReplayMod uses 8.0 as max relative distance threshold
         val maxRelDist = 8.0
 
-        try {
-            if (force || Math.abs(dx) > maxRelDist || Math.abs(dy) > maxRelDist || Math.abs(dz) > maxRelDist) {
-                // Absolute teleport packet
-                val posBuf = PacketByteBuf(Unpooled.buffer())
+        if (force || Math.abs(dx) > maxRelDist || Math.abs(dy) > maxRelDist || Math.abs(dz) > maxRelDist) {
+            // Absolute teleport packet
+            val posBuf = PacketByteBuf(Unpooled.buffer())
+            try {
                 posBuf.writeVarInt(player.id)
                 posBuf.writeDouble(x)
                 posBuf.writeDouble(y)
@@ -227,9 +227,13 @@ object RecordingEventHandler {
                 posBuf.writeBoolean(player.isOnGround)
                 val posPacket = EntityPositionS2CPacket(posBuf)
                 injectPacket(posPacket, posBuf)
+            } catch (_: Exception) {
+            } finally {
                 posBuf.release()
-            } else {
-                // Relative movement + rotation packet (matches ReplayMod)
+            }
+        } else {
+            // Relative movement + rotation packet (matches ReplayMod)
+            try {
                 val newYaw = (player.yaw * 256.0f / 360.0f).toInt().toByte()
                 val newPitch = (player.pitch * 256.0f / 360.0f).toInt().toByte()
                 val packet = EntityS2CPacket.RotateAndMoveRelative(
@@ -242,35 +246,39 @@ object RecordingEventHandler {
                     player.isOnGround
                 )
                 injectPacket(packet)
-            }
-        } catch (_: Exception) {}
+            } catch (_: Exception) {}
+        }
 
         // --- Velocity packet ---
         val vel = player.velocity
         if (vel.lengthSquared() > 0.0001) {
+            val velBuf = PacketByteBuf(Unpooled.buffer())
             try {
-                val velBuf = PacketByteBuf(Unpooled.buffer())
                 velBuf.writeVarInt(player.id)
                 velBuf.writeShort((vel.x.coerceIn(-3.9, 3.9) * 8000.0).toInt())
                 velBuf.writeShort((vel.y.coerceIn(-3.9, 3.9) * 8000.0).toInt())
                 velBuf.writeShort((vel.z.coerceIn(-3.9, 3.9) * 8000.0).toInt())
                 val velPacket = EntityVelocityUpdateS2CPacket(velBuf)
                 injectPacket(velPacket, velBuf)
+            } catch (_: Exception) {
+            } finally {
                 velBuf.release()
-            } catch (_: Exception) {}
+            }
         }
 
         // --- Head yaw (only if changed, like ReplayMod) ---
         val rotationYawHead = (player.headYaw * 256.0f / 360.0f).toInt()
         if (rotationYawHead != lastRotationYawHead) {
+            val headBuf = PacketByteBuf(Unpooled.buffer())
             try {
-                val headBuf = PacketByteBuf(Unpooled.buffer())
                 headBuf.writeVarInt(player.id)
                 headBuf.writeByte(rotationYawHead)
                 val headPacket = EntitySetHeadYawS2CPacket(headBuf)
                 injectPacket(headPacket, headBuf)
+            } catch (_: Exception) {
+            } finally {
                 headBuf.release()
-            } catch (_: Exception) {}
+            }
             lastRotationYawHead = rotationYawHead
         }
 
