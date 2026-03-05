@@ -27,7 +27,9 @@ The mod JAR is output to `build/libs/`. Install it in your Minecraft `mods/` fol
 
 | File | Description |
 |------|-------------|
-| `ReplayController.kt` | Reads tick records and applies position/rotation/hotbar during replay |
+| `ReplayHandler.kt` | Full replay lifecycle: fake `ClientConnection` + `EmbeddedChannel` for packet dispatch |
+| `ReplayPacketSender.kt` | Netty `ChannelDuplexHandler` that feeds captured S2C packets into the fake connection pipeline |
+| `ReplayController.kt` | Legacy position-only replay (kept for reference, superseded by `ReplayHandler`) |
 | `ReplayState.kt` | Global replay state flag (prevents capture during replay) |
 
 ### Video
@@ -42,7 +44,9 @@ The mod JAR is output to `build/libs/`. Install it in your Minecraft `mods/` fol
 |------|-------------|
 | `ClientPlayNetworkHandlerMixin.java` | Installs `RawPacketCapture` pipeline handler on game join |
 | `ClientConnectionAccessor.java` | Accessor mixin exposing Netty `Channel` from `ClientConnection` |
+| `MinecraftClientAccessor.java` | Accessor mixin for swapping `MinecraftClient.integratedServerConnection` (real ↔ fake) |
 | `EntityPrevAnglesAccessor.java` | Accessor for setting previous yaw/pitch during replay |
+| `PlayerEntityMixin.java` | Suppresses outgoing movement packets during replay (no real server to receive them) |
 
 ### Entry Point
 
@@ -66,22 +70,19 @@ The mod JAR is output to `build/libs/`. Install it in your Minecraft `mods/` fol
 
 ## How Replay Works
 
-`ReplayController.applyRecordedTick()` reads a 48-byte tick record and sets:
-- Player position (with full prev/render position sync)
-- Camera angles (yaw, pitch, head yaw, body yaw)
-- Hotbar slot, arm swing animation
+Replay uses a fake `ClientConnection` + `EmbeddedChannel` architecture (like ReplayMod's `ReplayHandler`):
 
-The replay runs at END_CLIENT_TICK, after the normal player tick completes. This ensures
-the integrated server stays connected (canceling the player tick causes disconnection).
-The player's position is overridden every tick to follow the recording.
+1. **`ReplayHandler.start()`** disconnects from the current world and opens the most recent replay session
+2. **`setupFakeConnection()`** creates a fake `ClientConnection(NetworkSide.CLIENTBOUND)`, wraps it in an `EmbeddedChannel`, and installs `ReplayPacketSender` in the pipeline
+3. **`MinecraftClientAccessor`** swaps `MinecraftClient.integratedServerConnection` to point at the fake connection
+4. **`ReplayPacketSender.sendPacketsForTick(tick)`** reads captured packets from the native bridge, deserializes them, and fires them into the channel via `fireChannelRead()`
+5. A whitelist of ~70 safe S2C packet types ensures only valid packets are dispatched (inventory, chunks, entities, screens, etc.)
+6. **Tick records** provide position/rotation/hotbar as a secondary overlay for smooth first-person camera tracking
+7. **`PlayerEntityMixin`** suppresses outgoing movement packets (no real server to receive them)
 
-**Current scope:** Live in-game replay shows position, rotation, hotbar, and arm swing.
-Raw S2C packet data is captured and stored but not dispatched during live replay because
-packets from a previous session reference entity IDs and world state that don't exist
-in the current game, causing corruption/disconnection. Full packet-based UI replay
-(inventory, chests, crafting, etc.) requires a fake server connection (future work,
-similar to ReplayMod's `ReplayHandler` architecture). Packet data is accessible via
-`export_json` and the simulator for offline analysis.
+This means all UI screens (inventory, crafting, chests, furnaces), entity updates, block changes,
+and all other server-driven state work automatically during replay. When replay ends,
+`ReplayHandler.stop()` disconnects the fake connection and returns to the title screen.
 
 ## Keybindings
 

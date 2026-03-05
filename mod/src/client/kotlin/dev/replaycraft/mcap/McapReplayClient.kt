@@ -6,7 +6,7 @@ import dev.replaycraft.mcap.capture.RecordingEventHandler
 import dev.replaycraft.mcap.capture.TickRingBuffer
 import dev.replaycraft.mcap.video.VideoRecorder
 import dev.replaycraft.mcap.native.NativeBridge
-import dev.replaycraft.mcap.replay.ReplayController
+import dev.replaycraft.mcap.replay.ReplayHandler
 import net.fabricmc.api.ClientModInitializer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
@@ -23,7 +23,7 @@ object McapReplayClient : ClientModInitializer {
     private val captureBuffer = TickRingBuffer(capacity = 20 * 120) // ~2 minutes
 
     private lateinit var writer: CaptureWriter
-    private val replay = ReplayController()
+    private val replay = ReplayHandler()
 
     private lateinit var keyToggleReplay: KeyBinding
     private lateinit var keyPlayPause: KeyBinding
@@ -71,18 +71,18 @@ object McapReplayClient : ClientModInitializer {
         
         // Handle keybindings on client tick
         ClientTickEvents.END_CLIENT_TICK.register(ClientTickEvents.EndTick { _ ->
-            val player = client.player ?: return@EndTick
             val window = client.window.handle
 
             // Toggle replay - always use direct GLFW for reliability
             // Guard: don't process replay keys when a screen (chat, inventory, etc.) is open
+            // Exception: allow exiting replay even with a screen open
             val toggleKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
-            if (toggleKeyDown && !lastToggleKeyState && client.currentScreen == null) {
-                if (!replay.isActive) {
+            if (toggleKeyDown && !lastToggleKeyState) {
+                if (!replay.isActive && client.currentScreen == null && client.player != null) {
                     // Flush capture data before starting replay
                     writer.flush()
                     replay.start()
-                } else {
+                } else if (replay.isActive) {
                     replay.stop()
                 }
             }

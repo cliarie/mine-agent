@@ -6,6 +6,7 @@
   "client": [
     "ClientConnectionAccessor",
     "EntityPrevAnglesAccessor",
+    "MinecraftClientAccessor",
     "ClientPlayNetworkHandlerMixin",
     "ClientPlayerEntityMixin",
     "ClientPlayerInteractionManagerMixin",

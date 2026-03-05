@@ -10,17 +10,26 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 /**
  * Mixin to adjust player behavior during replay mode.
  *
- * IMPORTANT: We do NOT cancel tick() or sendMovementPackets() because doing so
- * prevents critical entity bookkeeping and causes the integrated server to
- * disconnect the player ("save and quit" behavior). Instead, the replay system
- * overrides position/rotation every tick via ReplayController.applyRecordedTick(),
- * which runs at END_CLIENT_TICK (after the normal tick processing).
+ * With the ReplayHandler (fake connection) approach, we ARE connected to a fake
+ * ClientConnection via an EmbeddedChannel - there is no real server. So we CAN
+ * safely suppress sendMovementPackets() to avoid unnecessary outgoing packets.
  *
- * The normal tick still processes keyboard input, but the position is immediately
- * overridden by the replay data, so the player visually follows the recording.
+ * We do NOT cancel tick() because the player entity still needs its bookkeeping
+ * to function (animations, interpolation, etc.). The ReplayHandler overrides
+ * position/rotation every tick after the normal tick processing.
  */
 @Mixin(ClientPlayerEntity.class)
 public class PlayerEntityMixin {
-    // Intentionally empty - tick() and sendMovementPackets() must NOT be cancelled.
-    // See class javadoc for explanation.
+
+    /**
+     * Suppress outgoing movement packets during replay.
+     * With the fake connection there's no server to receive them anyway,
+     * and they would just accumulate in the EmbeddedChannel's outbound buffer.
+     */
+    @Inject(method = "sendMovementPackets", at = @At("HEAD"), cancellable = true)
+    private void mcap_onSendMovementPackets(CallbackInfo ci) {
+        if (ReplayState.INSTANCE.isReplayActive()) {
+            ci.cancel();
+        }
+    }
 }
