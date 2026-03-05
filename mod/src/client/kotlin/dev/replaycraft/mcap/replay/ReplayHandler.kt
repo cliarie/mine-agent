@@ -498,7 +498,7 @@ class ReplayHandler {
             stop()
             return
         }
-        if (wasPlaying) isPlaying = true
+        isPlaying = wasPlaying
     }
 
     fun prevSession() {
@@ -520,7 +520,7 @@ class ReplayHandler {
             stop()
             return
         }
-        if (wasPlaying) isPlaying = true
+        isPlaying = wasPlaying
     }
 
     fun renderHud(ctx: net.minecraft.client.gui.DrawContext) {
