@@ -12,6 +12,7 @@
     "ClientPlayerInteractionManagerMixin",
     "PacketCaptureMixin",
     "PlayerEntityMixin",
+    "TitleScreenMixin",
     "WorldMixin"
   ],
   "injectors": {

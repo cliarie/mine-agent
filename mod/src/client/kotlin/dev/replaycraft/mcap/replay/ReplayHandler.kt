@@ -60,8 +60,31 @@ class ReplayHandler {
     private var setupDelayTicks: Int = 0
 
     /**
+     * Start replay for a specific session directory (called from ReplayViewerScreen).
+     */
+    fun startSession(sessionDir: File) {
+        val sessionsDir = sessionDir.parentFile
+
+        // Build list of available sessions for prev/next switching
+        availableSessions = sessionsDir?.listFiles()?.filter { it.isDirectory }
+            ?.filter { session ->
+                val chunksDir = File(session, "chunks")
+                val chunkCount = chunksDir.listFiles()?.count { it.extension == "cap" } ?: 0
+                chunkCount >= 1
+            }
+            ?.sortedByDescending { it.name } ?: listOf(sessionDir)
+
+        // Find the selected session's index
+        selectedSessionIndex = availableSessions.indexOfFirst { it.absolutePath == sessionDir.absolutePath }
+        if (selectedSessionIndex < 0) selectedSessionIndex = 0
+
+        openSelectedSession()
+    }
+
+    /**
      * Start replay: find sessions, open the most recent one,
      * disconnect from real server, set up fake connection, and begin.
+     * (Legacy entry point, kept for backward compatibility)
      */
     fun start() {
         val client = MinecraftClient.getInstance()

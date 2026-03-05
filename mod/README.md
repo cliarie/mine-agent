@@ -29,6 +29,7 @@ The mod JAR is output to `build/libs/`. Install it in your Minecraft `mods/` fol
 |------|-------------|
 | `ReplayHandler.kt` | Full replay lifecycle: fake `ClientConnection` + `EmbeddedChannel` for packet dispatch |
 | `ReplayPacketSender.kt` | Netty `ChannelDuplexHandler` that feeds captured S2C packets into the fake connection pipeline |
+| `ReplayViewerScreen.kt` | Title screen Replay Center: lists recorded sessions, allows load/delete |
 | `ReplayController.kt` | Legacy position-only replay (kept for reference, superseded by `ReplayHandler`) |
 | `ReplayState.kt` | Global replay state flag (prevents capture during replay) |
 
@@ -47,6 +48,7 @@ The mod JAR is output to `build/libs/`. Install it in your Minecraft `mods/` fol
 | `MinecraftClientAccessor.java` | Accessor mixin for swapping `MinecraftClient.integratedServerConnection` (real ↔ fake) |
 | `EntityPrevAnglesAccessor.java` | Accessor for setting previous yaw/pitch during replay |
 | `PlayerEntityMixin.java` | Suppresses outgoing movement packets during replay (no real server to receive them) |
+| `TitleScreenMixin.java` | Injects "Replay Center" button into the Minecraft title screen |
 
 ### Entry Point
 
@@ -72,17 +74,21 @@ The mod JAR is output to `build/libs/`. Install it in your Minecraft `mods/` fol
 
 Replay uses a fake `ClientConnection` + `EmbeddedChannel` architecture (like ReplayMod's `ReplayHandler`):
 
-1. **`ReplayHandler.start()`** disconnects from the current world and opens the most recent replay session
-2. **`setupFakeConnection()`** creates a fake `ClientConnection(NetworkSide.CLIENTBOUND)`, wraps it in an `EmbeddedChannel`, and installs `ReplayPacketSender` in the pipeline
-3. **`MinecraftClientAccessor`** swaps `MinecraftClient.integratedServerConnection` to point at the fake connection
-4. **`ReplayPacketSender.sendPacketsForTick(tick)`** reads captured packets from the native bridge, deserializes them, and fires them into the channel via `fireChannelRead()`
-5. A whitelist of ~70 safe S2C packet types ensures only valid packets are dispatched (inventory, chunks, entities, screens, etc.)
-6. **Tick records** provide position/rotation/hotbar as a secondary overlay for smooth first-person camera tracking
-7. **`PlayerEntityMixin`** suppresses outgoing movement packets (no real server to receive them)
+1. **Replay Center** (title screen button → `ReplayViewerScreen`) lists all recorded sessions with date, duration, chunk count, and tick count. Select a session and click "Load Replay" to start.
+2. **`ReplayHandler.startSession(sessionDir)`** opens the selected session
+3. **`setupFakeConnection()`** creates a fake `ClientConnection(NetworkSide.CLIENTBOUND)`, wraps it in an `EmbeddedChannel`, and installs `ReplayPacketSender` in the pipeline
+4. **`MinecraftClientAccessor`** swaps `MinecraftClient.integratedServerConnection` to point at the fake connection
+5. **`ReplayPacketSender.sendPacketsForTick(tick)`** reads captured packets from the native bridge, deserializes them, and fires them into the channel via `fireChannelRead()`
+6. A whitelist of ~70 safe S2C packet types ensures only valid packets are dispatched (inventory, chunks, entities, screens, etc.)
+7. **Tick records** provide position/rotation/hotbar as a secondary overlay for smooth first-person camera tracking
+8. **`PlayerEntityMixin`** suppresses outgoing movement packets (no real server to receive them)
 
 This means all UI screens (inventory, crafting, chests, furnaces), entity updates, block changes,
 and all other server-driven state work automatically during replay. When replay ends,
 `ReplayHandler.stop()` disconnects the fake connection and returns to the title screen.
+
+Replay is launched from the title screen Replay Center (not from an in-game hotkey), so
+the player never needs to be in a live world to watch replays.
 
 ## Keybindings
 
@@ -90,7 +96,7 @@ All keybindings are in the "MCAP Replay" category:
 
 | Key | Action | Context |
 |-----|--------|---------|
-| `R` | Toggle replay mode | Always |
+| `R` | Exit replay (return to title screen) | During replay |
 | `G` | Play/pause | During replay |
 | `.` | Step one tick forward | During replay (paused) |
 | `[` | Previous session | During replay |
