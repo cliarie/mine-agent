@@ -26,21 +26,32 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public class MouseMixin {
 
     /**
-     * Cancel mouse-driven camera rotation during replay, but only when
-     * no screen is open. When a screen (e.g., GameMenuScreen, inventory)
-     * is open, the cursor needs to move freely so the user can click
-     * buttons like "Disconnect" to return to the title screen.
+     * Cancel ALL mouse-driven cursor movement during replay.
+     * This prevents:
+     * - Camera rotation changes (yaw/pitch) when no screen is open
+     * - Live cursor interfering with replayed inventory/container screens
      *
-     * When no screen is open, mouse movements would call
-     * Entity.changeLookDirection() and override the recorded yaw/pitch
-     * values, causing the camera to jitter.
+     * The user exits replay via Escape key (handled by McapReplayClient),
+     * so cursor movement for UI interaction is not needed during replay.
      */
     @Inject(method = "onCursorPos", at = @At("HEAD"), cancellable = true)
     private void mcap_onCursorPos(long window, double x, double y, CallbackInfo ci) {
         if (ReplayState.isReplayActive()) {
-            // Allow cursor movement when a screen is open (for UI interaction)
+            ci.cancel();
+        }
+    }
+
+    /**
+     * Cancel mouse clicks during replay when a handled screen (inventory, chest,
+     * crafting, etc.) is open. This prevents the user from accidentally moving
+     * items during replayed inventory views. Mouse clicks are still allowed
+     * when no screen is open (no effect anyway since cursor is suppressed).
+     */
+    @Inject(method = "onMouseButton", at = @At("HEAD"), cancellable = true)
+    private void mcap_onMouseButton(long window, int button, int action, int mods, CallbackInfo ci) {
+        if (ReplayState.isReplayActive()) {
             net.minecraft.client.MinecraftClient client = net.minecraft.client.MinecraftClient.getInstance();
-            if (client.currentScreen == null) {
+            if (client.currentScreen instanceof net.minecraft.client.gui.screen.ingame.HandledScreen) {
                 ci.cancel();
             }
         }

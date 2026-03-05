@@ -252,6 +252,7 @@ class ReplayHandler {
         prevTickZ = Double.NaN
         prevTickYaw = Float.NaN
         prevTickPitch = Float.NaN
+        accumulatedYaw = Float.NaN
         prevScreenType = 0
 
         println("[MCAP] Fake connection established with full ReplayMod pipeline for: $sessionName")
@@ -525,6 +526,13 @@ class ReplayHandler {
     private var prevTickYaw = Float.NaN
     private var prevTickPitch = Float.NaN
 
+    // Track accumulated yaw for unwrapping short-encoded values.
+    // The tick record stores yaw as short/100.0f (range ±327.67°).
+    // MC yaw can exceed this range with continuous rotation, so consecutive
+    // stored values may wrap (e.g., 327° → -327° for a small turn).
+    // We unwrap by tracking the accumulated yaw and adjusting for wraps.
+    private var accumulatedYaw = Float.NaN
+
     // Track previous screen type for detecting open/close transitions
     private var prevScreenType: Int = 0
 
@@ -560,8 +568,23 @@ class ReplayHandler {
         val y = buf.float
         val z = buf.float
 
-        val yaw = yawFp.toFloat() / 100.0f
+        val rawYaw = yawFp.toFloat() / 100.0f
         val pitch = pitchFp.toFloat() / 100.0f
+
+        // Unwrap yaw to maintain continuity across short encoding boundary.
+        // Without this, a small turn crossing ±327° looks like a 655° spin.
+        val yaw: Float
+        if (accumulatedYaw.isNaN()) {
+            accumulatedYaw = rawYaw
+            yaw = rawYaw
+        } else {
+            var delta = rawYaw - (accumulatedYaw % 360.0f)
+            // Normalize delta to [-180, 180]
+            while (delta > 180.0f) delta -= 360.0f
+            while (delta < -180.0f) delta += 360.0f
+            accumulatedYaw += delta
+            yaw = accumulatedYaw
+        }
 
         if (x.isNaN() || y.isNaN() || z.isNaN() || (x == 0f && y == 0f && z == 0f)) return
 
@@ -618,9 +641,22 @@ class ReplayHandler {
         }
 
         // Handle arm swing from flags (bit 8)
+        // Since tickMovement() is cancelled during replay, we must manually
+        // trigger AND tick the arm swing animation.
         val armSwinging = (flags and (1 shl 8)) != 0
         if (armSwinging && !player.handSwinging) {
             player.swingHand(net.minecraft.util.Hand.MAIN_HAND)
+        }
+        // Manually progress the arm swing animation since tickMovement() is cancelled.
+        // In normal MC, LivingEntity.tickMovement() calls tickHandSwing() which
+        // increments handSwingTicks. getHandSwingDuration() is private, so we use
+        // the default duration of 6 ticks (same as vanilla for normal speed).
+        if (player.handSwinging) {
+            player.handSwingTicks++
+            if (player.handSwingTicks >= 6) {
+                player.handSwingTicks = 0
+                player.handSwinging = false
+            }
         }
 
         // --- Screen open/close from tick record ---
