@@ -6,6 +6,9 @@ import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandler.Sharable
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
+import net.minecraft.network.NetworkSide
+import net.minecraft.network.NetworkState
+import net.minecraft.network.PacketByteBuf
 import net.minecraft.network.packet.Packet
 import net.minecraft.network.packet.s2c.login.LoginHelloS2CPacket
 import net.minecraft.network.packet.s2c.play.*
@@ -15,20 +18,20 @@ import java.nio.ByteOrder
 /**
  * Netty channel handler modeled after ReplayMod's FullReplaySender.
  *
- * Architecture (matching ReplayMod):
+ * Architecture:
  * - Extends ChannelInboundHandlerAdapter, sits in the EmbeddedChannel pipeline
- *   AFTER the DecoderHandler (which decodes raw ByteBuf -> Packet objects)
  * - Receives decoded Packet<?> objects in channelRead()
  * - Filters out BAD_PACKETS (blacklist approach, like ReplayMod)
  * - Passes allowed packets downstream via super.channelRead() to packet_handler (ClientConnection)
  *
  * Packet dispatch flow:
- * 1. ReplayHandler calls channel.pipeline().fireChannelRead(rawByteBuf)
- * 2. DecoderHandler decodes ByteBuf -> Packet<?> object
- * 3. PacketBundler handles bundle splitting
- * 4. This handler receives the decoded Packet in channelRead()
- * 5. If not in BAD_PACKETS, passes to ClientConnection via super.channelRead()
- * 6. ClientConnection dispatches to ClientPlayNetworkHandler.onXxx() methods
+ * 1. firePacketsForTick() reads native capture data and decodes packets directly
+ *    using NetworkState.PLAY.getPacketHandler() - bypasses DecoderHandler entirely
+ *    to avoid ByteToMessageDecoder cumulation corruption on decode errors
+ * 2. PacketBundler handles bundle splitting
+ * 3. This handler receives the decoded Packet in channelRead()
+ * 4. If not in BAD_PACKETS, passes to ClientConnection via super.channelRead()
+ * 5. ClientConnection dispatches to ClientPlayNetworkHandler.onXxx() methods
  */
 @Sharable
 class ReplayPacketSender(
@@ -41,6 +44,11 @@ class ReplayPacketSender(
      * Most packets are allowed; only problematic ones are blocked.
      */
     companion object {
+        // MC 1.20.1 PLAY CLIENTBOUND has ~111 packet types (indices 0-110).
+        // Any packet ID >= this threshold is invalid (e.g., 65535 from getPacketId
+        // returning -1 for unregistered types, stored as u16 0xFFFF).
+        private const val MAX_PLAY_PACKET_ID = 256
+
         private val BAD_PACKETS: Set<Class<out Packet<*>>> = setOf(
             // Login packets that shouldn't appear during PLAY state
             LoginHelloS2CPacket::class.java,
@@ -91,12 +99,17 @@ class ReplayPacketSender(
     }
 
     /**
-     * Read captured packets for a given tick from native storage and fire them
-     * as raw ByteBuf into the pipeline. The DecoderHandler will decode them
-     * into Packet objects which then flow through channelRead() above.
+     * Read captured packets for a given tick from native storage, decode them
+     * directly using NetworkState.PLAY.getPacketHandler(), and fire the decoded
+     * Packet<?> objects into the pipeline AFTER the decoder position.
+     *
+     * We bypass the DecoderHandler (ByteToMessageDecoder) entirely because:
+     * - ByteToMessageDecoder has internal cumulation state that gets corrupted
+     *   if any packet fails to decode (e.g., invalid packet ID)
+     * - Once corrupted, ALL subsequent packets fail with cascading errors
+     * - By decoding ourselves, each packet is independent and errors are isolated
      *
      * Native format per packet: [u16 packetId LE][u32 dataLen LE][data bytes]
-     * MC wire format: [varint packetId][data bytes]
      *
      * Returns the number of packets fired.
      */
@@ -110,35 +123,88 @@ class ReplayPacketSender(
         }
         if (packetsData.isEmpty()) return 0
 
-        val buf = ByteBuffer.wrap(packetsData).order(ByteOrder.LITTLE_ENDIAN)
+        val nativeBuf = ByteBuffer.wrap(packetsData).order(ByteOrder.LITTLE_ENDIAN)
         var count = 0
 
-        while (buf.remaining() >= 6) {
-            val packetId = buf.short.toInt() and 0xFFFF
-            val dataLen = buf.int
+        // Get the context for firing decoded packets - fire from the bundler context
+        // so packets go through: PacketBundler -> ReplayPacketSender -> ClientConnection
+        // This bypasses the DecoderHandler entirely.
+        val bundlerCtx = pipeline.context("bundler")
+        if (bundlerCtx == null) {
+            // Fallback: fire from pipeline head (goes through decoder)
+            return firePacketsForTickLegacy(pipeline, nativeBuf)
+        }
 
-            if (dataLen < 0 || buf.remaining() < dataLen) break
+        while (nativeBuf.remaining() >= 6) {
+            val packetId = nativeBuf.short.toInt() and 0xFFFF
+            val dataLen = nativeBuf.int
+
+            if (dataLen < 0 || nativeBuf.remaining() < dataLen) break
 
             val packetData = ByteArray(dataLen)
-            buf.get(packetData)
+            nativeBuf.get(packetData)
 
-            val rawBuf = Unpooled.buffer()
+            // Skip invalid packet IDs (e.g., 65535 from getPacketId returning -1
+            // for unregistered packet types like BundleSplitterPacket)
+            if (packetId >= MAX_PLAY_PACKET_ID) {
+                continue
+            }
+
             try {
-                // Reconstruct raw MC wire format: varint(packetId) + data
-                // This is what the DecoderHandler expects
-                writeVarInt(rawBuf, packetId)
-                rawBuf.writeBytes(packetData)
+                // Decode the packet directly using NetworkState.PLAY
+                // This is the same thing DecoderHandler.decode() does internally,
+                // but without the ByteToMessageDecoder cumulation wrapper
+                val packetByteBuf = PacketByteBuf(Unpooled.wrappedBuffer(packetData))
+                val packet = NetworkState.PLAY.getPacketHandler(
+                    NetworkSide.CLIENTBOUND, packetId, packetByteBuf
+                )
+                packetByteBuf.release()
 
-                // Fire into the pipeline head - flows through:
-                // DecoderHandler -> PacketBundler -> ReplayPacketSender -> ClientConnection
-                pipeline.fireChannelRead(rawBuf)
-                count++
+                if (packet != null) {
+                    // Fire the decoded packet into the pipeline starting at the bundler
+                    // This goes through: PacketBundler -> ReplayPacketSender -> ClientConnection
+                    bundlerCtx.fireChannelRead(packet)
+                    count++
+                }
             } catch (e: Exception) {
-                // Release ByteBuf on error to prevent leak
-                rawBuf.release()
+                // Skip packets that fail to decode - errors are isolated per-packet
+                // (no cumulation corruption since we don't use ByteToMessageDecoder)
             }
         }
 
+        return count
+    }
+
+    /**
+     * Fallback: fire raw ByteBuf through the full pipeline (including decoder).
+     * Used only if the bundler context is not found.
+     */
+    private fun firePacketsForTickLegacy(
+        pipeline: io.netty.channel.ChannelPipeline,
+        nativeBuf: ByteBuffer
+    ): Int {
+        var count = 0
+        while (nativeBuf.remaining() >= 6) {
+            val packetId = nativeBuf.short.toInt() and 0xFFFF
+            val dataLen = nativeBuf.int
+
+            if (dataLen < 0 || nativeBuf.remaining() < dataLen) break
+
+            val packetData = ByteArray(dataLen)
+            nativeBuf.get(packetData)
+
+            if (packetId >= MAX_PLAY_PACKET_ID) continue
+
+            val rawBuf = Unpooled.buffer()
+            try {
+                writeVarInt(rawBuf, packetId)
+                rawBuf.writeBytes(packetData)
+                pipeline.fireChannelRead(rawBuf)
+                count++
+            } catch (e: Exception) {
+                rawBuf.release()
+            }
+        }
         return count
     }
 

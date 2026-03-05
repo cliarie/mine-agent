@@ -80,7 +80,11 @@ object RawPacketCapture {
         if (!capturing) return
         try {
             val state = NetworkState.PLAY
-            val packetId = state.getPacketId(NetworkSide.CLIENTBOUND, packet) ?: return
+            val packetId = state.getPacketId(NetworkSide.CLIENTBOUND, packet)
+            // getPacketId returns -1 (not null) for unregistered packet types
+            // (e.g. BundleSplitterPacket) via Object2IntMap default value.
+            // -1 stored as u16 becomes 65535, causing decoder errors during replay.
+            if (packetId < 0) return
 
             val buf = PacketByteBuf(Unpooled.buffer())
             packet.write(buf)

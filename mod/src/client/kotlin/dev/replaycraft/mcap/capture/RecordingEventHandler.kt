@@ -160,7 +160,8 @@ object RecordingEventHandler {
     private fun injectPacket(packet: Packet<*>, buf: PacketByteBuf) {
         try {
             val state = NetworkState.PLAY
-            val packetId = state.getPacketId(NetworkSide.CLIENTBOUND, packet) ?: return
+            val packetId = state.getPacketId(NetworkSide.CLIENTBOUND, packet)
+            if (packetId < 0) return
 
             // Re-serialize the packet to get clean data bytes
             val writeBuf = PacketByteBuf(Unpooled.buffer())

@@ -296,8 +296,10 @@ class ReplayHandler {
         val sender = packetSender ?: return
         val pipe = channel?.pipeline() ?: return
 
-        // Send first 20 ticks worth of packets to bootstrap the world
-        for (t in 0..20) {
+        // Send first 20 ticks worth of packets to bootstrap the world,
+        // but clamp to maxTick for short sessions (< 21 ticks)
+        val setupEnd = minOf(20, maxTick)
+        for (t in 0..setupEnd) {
             val n = sender.firePacketsForTick(pipe, t)
             if (n > 0) {
                 println("[MCAP] Sent $n packets for setup tick $t")
@@ -305,7 +307,7 @@ class ReplayHandler {
         }
 
         worldLoaded = true
-        tick = 21 // Start playback after setup ticks
+        tick = minOf(21, maxTick) // Start playback after setup ticks
         println("[MCAP] World setup complete, ready for playback at tick $tick")
     }
 
@@ -489,6 +491,12 @@ class ReplayHandler {
 
         selectedSessionIndex = (selectedSessionIndex + 1) % availableSessions.size
         openSelectedSession()
+        // If openSelectedSession() failed, handler is left with replayHandle=-1
+        // but isActive=true. Stop to avoid broken state (infinite tick increments).
+        if (replayHandle < 0) {
+            stop()
+            return
+        }
         if (wasPlaying) isPlaying = true
     }
 
@@ -507,6 +515,10 @@ class ReplayHandler {
 
         selectedSessionIndex = (selectedSessionIndex - 1 + availableSessions.size) % availableSessions.size
         openSelectedSession()
+        if (replayHandle < 0) {
+            stop()
+            return
+        }
         if (wasPlaying) isPlaying = true
     }
 
