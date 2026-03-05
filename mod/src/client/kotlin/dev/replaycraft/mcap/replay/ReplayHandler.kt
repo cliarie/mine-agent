@@ -307,7 +307,7 @@ class ReplayHandler {
         }
 
         worldLoaded = true
-        tick = minOf(21, maxTick) // Start playback after setup ticks
+        tick = setupEnd + 1 // Start playback after setup ticks (avoids re-dispatching last setup tick)
         println("[MCAP] World setup complete, ready for playback at tick $tick")
     }
 
