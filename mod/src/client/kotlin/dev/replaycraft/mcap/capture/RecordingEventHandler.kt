@@ -2,13 +2,15 @@ package dev.replaycraft.mcap.capture
 
 import io.netty.buffer.Unpooled
 import net.minecraft.client.MinecraftClient
+import net.minecraft.entity.Entity
 import net.minecraft.entity.EquipmentSlot
+import net.minecraft.entity.LivingEntity
+import net.minecraft.entity.player.PlayerEntity
 import net.minecraft.item.ItemStack
 import net.minecraft.network.NetworkSide
 import net.minecraft.network.NetworkState
 import net.minecraft.network.PacketByteBuf
 import net.minecraft.network.packet.Packet
-import net.minecraft.entity.Entity
 import net.minecraft.network.packet.s2c.play.*
 import net.minecraft.util.Hand
 import net.minecraft.util.math.BlockPos
@@ -31,9 +33,17 @@ import net.minecraft.util.math.BlockPos
  * - BlockBreakingProgressS2CPacket (block breaking animation, via WorldRendererMixin)
  *
  * These are serialized and fed into RawPacketCapture as if the server sent them.
+ *
+ * Additionally, spawnRecordingPlayer() injects spawn packets for the local player
+ * (matching ReplayMod's RecordingEventHandler.spawnRecordingPlayer()), and
+ * spawnExistingEntities() injects spawn packets for all entities already loaded
+ * in the world when recording starts. Without these, creatures and the player
+ * won't appear during replay because the server never re-sends spawn packets
+ * for entities that were already tracked.
  */
 object RecordingEventHandler {
 
+    private var hasSpawnedPlayer = false
     private var lastX = Double.NaN
     private var lastY = Double.NaN
     private var lastZ = Double.NaN
@@ -57,7 +67,91 @@ object RecordingEventHandler {
         lastVehicle = null
         wasSleeping = false
         ticksSinceLastCorrection = 0
+        hasSpawnedPlayer = false
         playerItems.fill(ItemStack.EMPTY)
+    }
+
+    /**
+     * Inject a PlayerSpawnS2CPacket + EntityTrackerUpdateS2CPacket for the local player.
+     * Matching ReplayMod's RecordingEventHandler.spawnRecordingPlayer().
+     *
+     * The server never sends a spawn packet for the local player to itself,
+     * but during replay the player entity needs to be spawned as a third-person
+     * entity so it's visible and tracked correctly.
+     */
+    fun spawnRecordingPlayer() {
+        if (!RawPacketCapture.isCapturing()) return
+        val client = MinecraftClient.getInstance()
+        val player = client.player ?: return
+
+        try {
+            // PlayerSpawnS2CPacket for the local player (like ReplayMod line 139)
+            injectPacket(PlayerSpawnS2CPacket(player))
+
+            // EntityTrackerUpdateS2CPacket with all tracked data (like ReplayMod line 144)
+            val entries = player.dataTracker.changedEntries
+            if (entries != null && entries.isNotEmpty()) {
+                injectPacket(EntityTrackerUpdateS2CPacket(player.id, entries))
+            }
+        } catch (e: Exception) {
+            println("[MCAP] Failed to inject player spawn: ${e.message}")
+        }
+    }
+
+    /**
+     * Inject spawn packets for all entities currently loaded in the world.
+     * This ensures creatures (cows, pigs, villagers, creepers, etc.) that were
+     * already present when recording started appear during replay.
+     *
+     * The server only sends EntitySpawnS2CPacket when an entity first enters
+     * the player's tracking range. If recording starts after entities are already
+     * tracked, those spawn packets were missed. We inject them synthetically.
+     */
+    fun spawnExistingEntities() {
+        if (!RawPacketCapture.isCapturing()) return
+        val client = MinecraftClient.getInstance()
+        val world = client.world ?: return
+        val player = client.player ?: return
+
+        var count = 0
+        for (entity in world.entities) {
+            if (entity == player) continue // Player is handled by spawnRecordingPlayer
+            if (entity.id == player.id) continue
+
+            try {
+                if (entity is PlayerEntity) {
+                    // Other players use PlayerSpawnS2CPacket
+                    injectPacket(PlayerSpawnS2CPacket(entity))
+                } else {
+                    // All other entities (mobs, animals, items, etc.) use EntitySpawnS2CPacket
+                    injectPacket(EntitySpawnS2CPacket(entity))
+                }
+
+                // Send tracker data so entity appearance/state is correct
+                val entries = entity.dataTracker.changedEntries
+                if (entries != null && entries.isNotEmpty()) {
+                    injectPacket(EntityTrackerUpdateS2CPacket(entity.id, entries))
+                }
+
+                // Send equipment for living entities
+                if (entity is LivingEntity) {
+                    for (slot in EquipmentSlot.values()) {
+                        val stack = entity.getEquippedStack(slot)
+                        if (!stack.isEmpty) {
+                            injectPacket(EntityEquipmentUpdateS2CPacket(
+                                entity.id,
+                                listOf(com.mojang.datafixers.util.Pair(slot, stack.copy()))
+                            ))
+                        }
+                    }
+                }
+
+                count++
+            } catch (e: Exception) {
+                // Skip entities that fail to serialize
+            }
+        }
+        println("[MCAP] Injected spawn packets for $count existing entities")
     }
 
     /**
@@ -68,6 +162,13 @@ object RecordingEventHandler {
 
         val client = MinecraftClient.getInstance()
         val player = client.player ?: return
+
+        // On first tick, inject spawn packets for player + all existing entities
+        if (!hasSpawnedPlayer) {
+            hasSpawnedPlayer = true
+            spawnRecordingPlayer()
+            spawnExistingEntities()
+        }
 
         // --- Position packet (matching ReplayMod's logic) ---
         val x = player.x

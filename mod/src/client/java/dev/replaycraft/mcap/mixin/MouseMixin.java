@@ -26,16 +26,23 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public class MouseMixin {
 
     /**
-     * Cancel mouse movement processing during replay.
-     * This is the key fix: without this, mouse movements during replay
-     * would call Entity.changeLookDirection() and override the recorded
-     * yaw/pitch values, causing the camera to jitter or deviate from
-     * the captured first-person perspective.
+     * Cancel mouse-driven camera rotation during replay, but only when
+     * no screen is open. When a screen (e.g., GameMenuScreen, inventory)
+     * is open, the cursor needs to move freely so the user can click
+     * buttons like "Disconnect" to return to the title screen.
+     *
+     * When no screen is open, mouse movements would call
+     * Entity.changeLookDirection() and override the recorded yaw/pitch
+     * values, causing the camera to jitter.
      */
     @Inject(method = "onCursorPos", at = @At("HEAD"), cancellable = true)
     private void mcap_onCursorPos(long window, double x, double y, CallbackInfo ci) {
         if (ReplayState.isReplayActive()) {
-            ci.cancel();
+            // Allow cursor movement when a screen is open (for UI interaction)
+            net.minecraft.client.MinecraftClient client = net.minecraft.client.MinecraftClient.getInstance();
+            if (client.currentScreen == null) {
+                ci.cancel();
+            }
         }
     }
 
