@@ -150,6 +150,11 @@ class ReplayController {
     }
 
     private fun applyRecordedTick(client: MinecraftClient) {
+        // Always apply packets first, even if tick record is invalid/missing.
+        // Packets (entity updates, block changes, UI screens, chat, etc.) must
+        // be dispatched regardless of whether the position data is usable.
+        applyPacketsForTick(client, tick)
+
         val player = client.player ?: return
         if (replayHandle < 0) return
 
@@ -226,8 +231,6 @@ class ReplayController {
             player.swingHand(net.minecraft.util.Hand.MAIN_HAND)
         }
         
-        // Apply raw S2C packets for this tick through network handler
-        applyPacketsForTick(client, tick)
     }
     
     /**
