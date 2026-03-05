@@ -63,6 +63,7 @@ object McapReplayClient : ClientModInitializer {
         var lastPlayPauseKeyState = false
         var lastPrevKeyState = false
         var lastNextKeyState = false
+        var lastExitKeyState = false
         
         // Track whether player was in a world last tick (to detect disconnect)
         var wasInWorld = false
@@ -111,6 +112,15 @@ object McapReplayClient : ClientModInitializer {
                 }
                 lastNextKeyState = nextKeyDown
 
+                // Exit replay (R key) - return to title screen
+                val exitKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
+                if (exitKeyDown && !lastExitKeyState && client.currentScreen == null) {
+                    lastExitKeyState = exitKeyDown
+                    replay.stop()
+                    return@EndTick
+                }
+                lastExitKeyState = exitKeyDown
+
                 replay.onClientTick(client)
             } else {
                 // Reset replay control states when replay not active
@@ -118,6 +128,7 @@ object McapReplayClient : ClientModInitializer {
                 lastStepKeyState = false
                 lastPrevKeyState = false
                 lastNextKeyState = false
+                lastExitKeyState = false
             }
         })
 

@@ -3,29 +3,40 @@ package dev.replaycraft.mcap.replay
 import dev.replaycraft.mcap.mixin.MinecraftClientAccessor
 import dev.replaycraft.mcap.native.NativeBridge
 import io.netty.channel.ChannelHandlerContext
+import io.netty.channel.ChannelOutboundHandlerAdapter
+import io.netty.channel.ChannelPromise
 import io.netty.channel.embedded.EmbeddedChannel
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.network.ClientLoginNetworkHandler
 import net.minecraft.network.ClientConnection
+import net.minecraft.network.DecoderHandler
 import net.minecraft.network.NetworkSide
+import net.minecraft.network.NetworkState
+import net.minecraft.network.PacketBundler
+import net.minecraft.network.PacketEncoder
 import java.io.File
 import java.time.Duration
 
 /**
  * Manages the full packet replay lifecycle using a fake server connection.
  *
- * Architecture (matching ReplayMod's ReplayHandler):
- * 1. Disconnect from the real server (integrated or remote)
- * 2. Create a fake ClientConnection with NetworkSide.CLIENTBOUND
- * 3. Wrap it in an EmbeddedChannel with our ReplayPacketSender in the pipeline
+ * Architecture (matching ReplayMod's ReplayHandler.setup()):
+ *
+ * 1. Create a fake ClientConnection(NetworkSide.CLIENTBOUND)
+ * 2. Create an EmbeddedChannel with this pipeline (matching ReplayMod exactly):
+ *    DropOutboundMessagesHandler -> decoder (DecoderHandler) -> encoder (PacketEncoder)
+ *    -> bundler (PacketBundler) -> mcap_replay_sender (ReplayPacketSender)
+ *    -> packet_handler (ClientConnection)
+ * 3. Set network state to LOGIN, install ClientLoginNetworkHandler
  * 4. Set it as MinecraftClient's active connection
- * 5. Feed captured packets through the channel at tick rate
- * 6. The normal MC packet handling pipeline processes everything:
- *    - GameJoinS2CPacket creates the world and player
- *    - ChunkDataS2CPacket loads terrain
- *    - OpenScreenS2CPacket shows inventory/crafting/chests
- *    - All entity, block, and UI packets work naturally
- * 7. On replay end, disconnect and return to title screen
+ * 5. Fire raw ByteBuf packets through channel.pipeline().fireChannelRead()
+ *    - DecoderHandler decodes them into Packet<?> objects
+ *    - PacketBundler handles bundle splitting (prevents BundleSplitterPacket crashes)
+ *    - ReplayPacketSender filters BAD_PACKETS
+ *    - ClientConnection dispatches to the appropriate handler
+ * 6. LoginSuccessS2CPacket triggers automatic LOGIN->PLAY state transition
+ * 7. GameJoinS2CPacket creates the world and player
+ * 8. All subsequent packets are processed naturally
  */
 class ReplayHandler {
 
@@ -56,8 +67,6 @@ class ReplayHandler {
     // Track whether the initial world has been set up via GameJoinS2CPacket
     private var worldLoaded: Boolean = false
 
-    // Ticks to wait before starting packet dispatch (let MC process the terrain screen)
-    private var setupDelayTicks: Int = 0
 
     /**
      * Start replay for a specific session directory (called from ReplayViewerScreen).
@@ -147,16 +156,26 @@ class ReplayHandler {
     }
 
     /**
-     * Core of the ReplayHandler: disconnect from real server and set up
-     * a fake ClientConnection with an EmbeddedChannel pipeline.
+     * Core setup matching ReplayMod's ReplayHandler.setup().
+     *
+     * Creates:
+     * - Fake ClientConnection(NetworkSide.CLIENTBOUND)
+     * - EmbeddedChannel with full pipeline:
+     *   DropOutbound -> decoder -> encoder -> bundler -> replay_sender -> packet_handler
+     * - Sets network state to LOGIN with ClientLoginNetworkHandler
+     * - Sets as MC's active connection
+     * - Fires initial packets (LoginSuccess triggers LOGIN->PLAY transition)
      */
     private fun setupFakeConnection() {
         val client = MinecraftClient.getInstance()
 
-        // Create the packet sender that will feed captured packets
+        // Clear chat (like ReplayMod does)
+        client.inGameHud.chatHud.clear(false)
+
+        // Create the packet sender that will filter captured packets
         packetSender = ReplayPacketSender(replayHandle)
 
-        // Create a fake ClientConnection (like ReplayMod does)
+        // Create a fake ClientConnection (exactly like ReplayMod)
         val networkManager = object : ClientConnection(NetworkSide.CLIENTBOUND) {
             override fun exceptionCaught(ctx: ChannelHandlerContext, t: Throwable) {
                 println("[MCAP] Replay connection exception: ${t.message}")
@@ -165,9 +184,25 @@ class ReplayHandler {
         }
         fakeConnection = networkManager
 
-        // Set up the initial packet listener (login handler, will transition to play handler)
-        // MC 1.20.1 signature: (ClientConnection, MinecraftClient, ServerInfo?, Screen?, boolean, Duration, Consumer<Text>)
-        val loginHandler = ClientLoginNetworkHandler(
+        // Create the EmbeddedChannel with full pipeline matching ReplayMod:
+        // DropOutbound -> decoder -> encoder -> bundler -> replay_sender -> packet_handler
+        channel = EmbeddedChannel()
+        channel!!.pipeline().addFirst("mcap_drop_outbound", DropOutboundMessagesHandler())
+        channel!!.pipeline().addLast("decoder", DecoderHandler(NetworkSide.CLIENTBOUND))
+        channel!!.pipeline().addLast("encoder", PacketEncoder(NetworkSide.SERVERBOUND))
+        channel!!.pipeline().addLast("bundler", PacketBundler(NetworkSide.CLIENTBOUND))
+        channel!!.pipeline().addLast("mcap_replay_sender", packetSender)
+        channel!!.pipeline().addLast("packet_handler", networkManager)
+        channel!!.pipeline().fireChannelActive()
+
+        // Set network state to LOGIN (like ReplayMod: networkManager.setState(NetworkState.LOGIN))
+        // MC transitions from handshake to login via packets normally, but we have no server
+        // so we must switch manually.
+        networkManager.setState(NetworkState.LOGIN)
+
+        // Set the initial packet listener (login handler - will transition to play handler
+        // when LoginSuccessS2CPacket is received through the pipeline)
+        networkManager.setPacketListener(ClientLoginNetworkHandler(
             networkManager,
             client,
             null,  // serverInfo
@@ -175,14 +210,7 @@ class ReplayHandler {
             false, // newWorld
             Duration.ZERO, // worldLoadTime
             { }    // statusConsumer
-        )
-        networkManager.setPacketListener(loginHandler)
-
-        // Create the EmbeddedChannel with our sender in the pipeline
-        channel = EmbeddedChannel()
-        channel!!.pipeline().addLast("mcap_replay_sender", packetSender)
-        channel!!.pipeline().addLast("packet_handler", networkManager)
-        channel!!.pipeline().fireChannelActive()
+        ))
 
         // Disconnect from the real server/world
         client.disconnect()
@@ -196,60 +224,29 @@ class ReplayHandler {
         isPlaying = false
         tick = 0
         worldLoaded = false
-        setupDelayTicks = 0
 
-        println("[MCAP] Fake connection established, starting packet replay for: $sessionName")
+        println("[MCAP] Fake connection established with full ReplayMod pipeline for: $sessionName")
 
-        // Directly trigger the LOGIN → PLAY state transition.
-        // We call onSuccess() on the login handler directly instead of going through
-        // the EmbeddedChannel pipeline, which doesn't reliably trigger channelRead.
-        // This creates the ClientPlayNetworkHandler and sets it as the packet listener,
-        // allowing all subsequent PLAY state packets to be processed correctly.
-        val uuid = try {
-            java.util.UUID.fromString(client.session.uuid)
-        } catch (_: Exception) {
-            java.util.UUID.randomUUID()
-        }
-        val profile = com.mojang.authlib.GameProfile(uuid, client.session.username)
-        val loginSuccess = net.minecraft.network.packet.s2c.login.LoginSuccessS2CPacket(profile)
-        loginHandler.onSuccess(loginSuccess)
-        println("[MCAP] Login-to-play transition complete, ClientPlayNetworkHandler active")
-
-        // Send the initial batch of packets (tick 0) which should include GameJoinS2CPacket
-        // This sets up the world, player entity, etc.
+        // Send the initial batch of packets starting from tick 0.
+        // The replay file should contain LoginSuccessS2CPacket (triggers LOGIN->PLAY transition)
+        // followed by GameJoinS2CPacket (creates the world and player).
+        // These are fired as raw ByteBuf through the pipeline and decoded by DecoderHandler.
         sendInitialPackets()
     }
 
     /**
-     * Send packets for tick 0 to bootstrap the world.
-     * GameJoinS2CPacket will create the ClientPlayNetworkHandler,
-     * which then processes subsequent packets.
+     * Send packets for initial ticks to bootstrap the world.
+     * Fires raw ByteBuf through the pipeline - DecoderHandler decodes them.
      */
     private fun sendInitialPackets() {
         val sender = packetSender ?: return
-        val count = sender.sendPacketsForTick(0)
-        println("[MCAP] Sent $count initial packets (tick 0)")
+        val pipe = channel?.pipeline() ?: return
 
-        // Process the channel's pending messages
-        channel?.let { ch ->
-            while (ch.inboundMessages().isNotEmpty()) {
-                ch.readInbound<Any>()
-            }
-        }
-
-        // Also send a few more ticks worth of packets to ensure world is loaded
-        // (chunk data, entity spawns, etc. may span multiple ticks)
-        for (t in 1..20) {
-            val n = sender.sendPacketsForTick(t)
+        // Send first 20 ticks worth of packets to bootstrap the world
+        for (t in 0..20) {
+            val n = sender.firePacketsForTick(pipe, t)
             if (n > 0) {
                 println("[MCAP] Sent $n packets for setup tick $t")
-            }
-        }
-
-        // Process any pending messages again
-        channel?.let { ch ->
-            while (ch.inboundMessages().isNotEmpty()) {
-                ch.readInbound<Any>()
             }
         }
 
@@ -280,6 +277,9 @@ class ReplayHandler {
         ReplayState.setReplayActive(false)
         isPlaying = false
         worldLoaded = false
+
+        // Clear the bridge reference so McapReplayClient stops checking this handler
+        McapReplayClientBridge.clearActiveReplay()
 
         // Disconnect from the fake world and return to title
         client.disconnect()
@@ -325,20 +325,15 @@ class ReplayHandler {
 
     /**
      * Dispatch all captured packets for the current tick through the fake connection.
-     * Also applies tick record data (position/rotation/hotbar) from the 48-byte format.
+     * Fires raw ByteBuf through the pipeline - DecoderHandler decodes, PacketBundler
+     * handles bundles, ReplayPacketSender filters, ClientConnection dispatches.
      */
     private fun dispatchTickPackets(client: MinecraftClient) {
         val sender = packetSender ?: return
+        val pipe = channel?.pipeline() ?: return
 
-        // Send captured S2C packets for this tick
-        val count = sender.sendPacketsForTick(tick)
-
-        // Process the channel's pending messages
-        channel?.let { ch ->
-            while (ch.inboundMessages().isNotEmpty()) {
-                ch.readInbound<Any>()
-            }
-        }
+        // Fire captured S2C packets for this tick through the pipeline
+        sender.firePacketsForTick(pipe, tick)
 
         // Also apply tick record data for position/rotation/hotbar
         // This ensures the camera follows the recorded first-person perspective
@@ -475,7 +470,26 @@ class ReplayHandler {
         val worldStatus = if (worldLoaded) "World loaded" else "Loading..."
         ctx.drawText(MinecraftClient.getInstance().textRenderer, worldStatus, 8, 32, 0xAAAAAA, true)
 
-        val controls = "G=Play/Pause  .=Step  [/]=Prev/Next  V=Video"
+        val controls = "G=Play/Pause  .=Step  [/]=Prev/Next  R=Exit  V=Video"
         ctx.drawText(MinecraftClient.getInstance().textRenderer, controls, 8, 44, 0xAAAAAA, true)
+    }
+
+    /**
+     * Swallows all outbound messages on the EmbeddedChannel.
+     * Matching ReplayMod's DropOutboundMessagesHandler.
+     *
+     * The EmbeddedChannel's event loop considers every thread to be in it,
+     * so multiple threads may try to write simultaneously. Rather than dealing
+     * with thread-safety issues, we just drop all writes (there's no real server).
+     */
+    private class DropOutboundMessagesHandler : ChannelOutboundHandlerAdapter() {
+        override fun write(ctx: ChannelHandlerContext, msg: Any, promise: ChannelPromise) {
+            // Drop all outgoing messages - there is no server
+            promise.setSuccess()
+        }
+
+        override fun flush(ctx: ChannelHandlerContext) {
+            // Drop flush too
+        }
     }
 }

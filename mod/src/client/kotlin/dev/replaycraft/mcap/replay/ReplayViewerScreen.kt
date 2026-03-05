@@ -24,7 +24,7 @@ class ReplayViewerScreen(private val parent: Screen) : Screen(Text.literal("Repl
 
     override fun init() {
         // Session list widget (centered, with margins for title and buttons)
-        sessionList = SessionListWidget(client!!, width, height - 96, 32, 36)
+        sessionList = SessionListWidget(client!!, width, height, 32, 36)
         addDrawableChild(sessionList!!)
 
         // Load button
