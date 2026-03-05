@@ -64,6 +64,7 @@ object McapReplayClient : ClientModInitializer {
         var lastPrevKeyState = false
         var lastNextKeyState = false
         var lastExitKeyState = false
+        var lastSaveQuitKeyState = false
         
         // Handle keybindings on client tick
         ClientTickEvents.END_CLIENT_TICK.register(ClientTickEvents.EndTick { _ ->
@@ -101,17 +102,28 @@ object McapReplayClient : ClientModInitializer {
                 }
                 lastNextKeyState = nextKeyDown
 
-                // Exit replay (R key)
+                // Exit replay (R key) - return to title screen
                 val exitKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
                 if (exitKeyDown && !lastExitKeyState) {
                     replay.stop()
                     McapReplayClientBridge.clearActiveReplay()
+                    return@EndTick
                 }
                 lastExitKeyState = exitKeyDown
 
                 replay.onClientTick(client)
             } else {
-                // Reset states when replay not active
+                // R key when in a world (not replay): save session and quit to title screen
+                val saveQuitKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
+                if (saveQuitKeyDown && !lastSaveQuitKeyState && client.player != null && client.currentScreen == null) {
+                    println("[MCAP] R pressed: saving session and quitting to title screen")
+                    writer.flush()
+                    client.world?.disconnect()
+                    client.disconnect()
+                }
+                lastSaveQuitKeyState = saveQuitKeyDown
+
+                // Reset replay control states when replay not active
                 lastPlayPauseKeyState = false
                 lastStepKeyState = false
                 lastPrevKeyState = false

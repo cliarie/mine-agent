@@ -96,8 +96,8 @@ class ReplayViewerScreen(private val parent: Screen) : Screen(Text.literal("Repl
         val entry = sessionList?.selectedOrNull ?: return
         val mc = client ?: return
 
-        // Show confirmation
-        mc.setScreen(ConfirmDeleteScreen(this, entry.sessionDir))
+        // Show confirmation - pass TitleScreen (parent) so after delete we get a fresh viewer
+        mc.setScreen(ConfirmDeleteScreen(parent, entry.sessionDir))
     }
 
     override fun close() {
@@ -227,7 +227,7 @@ class ReplayViewerScreen(private val parent: Screen) : Screen(Text.literal("Repl
  * Simple confirmation screen for deleting a session.
  */
 class ConfirmDeleteScreen(
-    private val parent: ReplayViewerScreen,
+    private val titleScreen: Screen,
     private val sessionDir: File
 ) : Screen(Text.literal("Delete Replay?")) {
 
@@ -236,13 +236,15 @@ class ConfirmDeleteScreen(
             ButtonWidget.builder(Text.literal("Delete")) {
                 // Delete the session directory recursively
                 sessionDir.deleteRecursively()
-                client?.setScreen(ReplayViewerScreen(parent))
+                // Navigate to a fresh ReplayViewerScreen with the TitleScreen as parent
+                client?.setScreen(ReplayViewerScreen(titleScreen))
             }.dimensions(width / 2 - 104, height / 2 + 10, 100, 20).build()
         )
 
         addDrawableChild(
             ButtonWidget.builder(Text.literal("Cancel")) {
-                client?.setScreen(parent)
+                // Go back to a fresh ReplayViewerScreen (session list)
+                client?.setScreen(ReplayViewerScreen(titleScreen))
             }.dimensions(width / 2 + 4, height / 2 + 10, 100, 20).build()
         )
     }

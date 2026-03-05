@@ -21,10 +21,13 @@ public abstract class TitleScreenMixin extends Screen {
         super(title);
     }
 
-    @Inject(method = "initWidgetsNormal", at = @At("RETURN"))
-    private void mcap_addReplayCenterButton(int y, int spacingY, CallbackInfo ci) {
-        // Add "Replay Center" button below the existing buttons
-        // Position it centered, below the row of Singleplayer/Multiplayer/Realms buttons
+    @Inject(method = "init", at = @At("RETURN"))
+    private void mcap_addReplayCenterButton(CallbackInfo ci) {
+        // Add "Replay Center" button on the title screen
+        // Place it below the quit button row: y = height/4 + 48 + 24*3 = height/4 + 120
+        // The language/options/quit buttons end around height/4 + 48 + 72 + 12 + 24 = height/4 + 156
+        // We place our button just below those at height/4 + 48 + 24*5 to avoid overlaps
+        int buttonY = this.height / 4 + 48 + 24 * 5;
         this.addDrawableChild(
             ButtonWidget.builder(
                 Text.literal("Replay Center"),
@@ -33,7 +36,7 @@ public abstract class TitleScreenMixin extends Screen {
                         this.client.setScreen(new ReplayViewerScreen((TitleScreen)(Object)this));
                     }
                 }
-            ).dimensions(this.width / 2 - 100, y + spacingY * 3, 200, 20).build()
+            ).dimensions(this.width / 2 - 100, buttonY, 200, 20).build()
         );
     }
 }
