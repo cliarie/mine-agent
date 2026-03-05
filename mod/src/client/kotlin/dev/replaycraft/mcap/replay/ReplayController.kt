@@ -130,7 +130,6 @@ class ReplayController {
         }
         
         applyRecordedTick(client)
-        applyPacketsForTick(client, tick)
         
         // Manually tick hand swing animation
         val player = client.player
@@ -248,9 +247,9 @@ class ReplayController {
         
         val buf = ByteBuffer.wrap(packetsData).order(ByteOrder.LITTLE_ENDIAN)
         
-        while (buf.remaining() >= 4) {
+        while (buf.remaining() >= 6) {
             val packetId = buf.short.toInt() and 0xFFFF
-            val dataLen = buf.short.toInt() and 0xFFFF
+            val dataLen = buf.int
             
             if (buf.remaining() < dataLen) break
             

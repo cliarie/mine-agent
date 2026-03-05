@@ -23,7 +23,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *   u32 tick, u32 timestamp_ms, u32 packet_id, byte[] raw_data
  *
  * On disk (packets.bin v2):
- *   u32 tick, u32 timestamp_ms, u16 packet_id, u16 data_len, data...
+ *   u32 tick, u32 timestamp_ms, u16 packet_id, u32 data_len, data...
  */
 object RawPacketCapture {
 
@@ -45,6 +45,7 @@ object RawPacketCapture {
     var currentTick: Int = 0
         private set
 
+    @Volatile
     internal var startTimeMs: Long = 0L
 
     @JvmStatic
@@ -129,7 +130,7 @@ object RawPacketCapture {
 
     /**
      * Drain all captured packets into a byte array for storage.
-     * Format per packet: u32 tick, u32 timestamp_ms, u16 packetId, u16 dataLen, data[]
+     * Format per packet: u32 tick, u32 timestamp_ms, u16 packetId, u32 dataLen, data[]
      */
     fun drainPackets(): ByteArray {
         val packets = mutableListOf<CapturedRawPacket>()
@@ -141,7 +142,7 @@ object RawPacketCapture {
 
         var totalSize = 0
         for (p in packets) {
-            totalSize += 4 + 4 + 2 + 2 + p.data.size
+            totalSize += 4 + 4 + 2 + 4 + p.data.size
         }
 
         val out = ByteArray(totalSize)
@@ -164,10 +165,12 @@ object RawPacketCapture {
             out[offset++] = (p.packetId and 0xFF).toByte()
             out[offset++] = ((p.packetId shr 8) and 0xFF).toByte()
 
-            // u16 dataLen (little-endian)
+            // u32 dataLen (little-endian)
             val len = p.data.size
             out[offset++] = (len and 0xFF).toByte()
             out[offset++] = ((len shr 8) and 0xFF).toByte()
+            out[offset++] = ((len shr 16) and 0xFF).toByte()
+            out[offset++] = ((len shr 24) and 0xFF).toByte()
 
             // data
             System.arraycopy(p.data, 0, out, offset, len)
