@@ -12,11 +12,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  *
  * With the ReplayHandler (fake connection) approach, we ARE connected to a fake
  * ClientConnection via an EmbeddedChannel - there is no real server. So we CAN
- * safely suppress sendMovementPackets() to avoid unnecessary outgoing packets.
+ * safely suppress sendMovementPackets() and tickMovement() during replay.
  *
- * We do NOT cancel tick() because the player entity still needs its bookkeeping
- * to function (animations, interpolation, etc.). The ReplayHandler overrides
- * position/rotation every tick after the normal tick processing.
+ * tickMovement() MUST be cancelled during replay because it applies client-side
+ * physics (gravity, collision, movement input). Without cancelling it, the player
+ * falls through terrain between tick dispatches because MC applies gravity every
+ * client tick. ReplayMod solves this with a CameraEntity (spectator-like entity);
+ * we solve it by simply cancelling the local physics and letting ReplayHandler
+ * set position/rotation from the captured tick records.
  */
 @Mixin(ClientPlayerEntity.class)
 public class PlayerEntityMixin {
@@ -28,6 +31,19 @@ public class PlayerEntityMixin {
      */
     @Inject(method = "sendMovementPackets", at = @At("HEAD"), cancellable = true)
     private void mcap_onSendMovementPackets(CallbackInfo ci) {
+        if (ReplayState.INSTANCE.isReplayActive()) {
+            ci.cancel();
+        }
+    }
+
+    /**
+     * Suppress client-side physics (gravity, collision, movement input) during replay.
+     * Without this, the player falls through terrain because MC applies gravity every
+     * client tick, and our position override only runs at END_CLIENT_TICK (after physics).
+     * The ReplayHandler sets position/rotation from captured tick records instead.
+     */
+    @Inject(method = "tickMovement", at = @At("HEAD"), cancellable = true)
+    private void mcap_onTickMovement(CallbackInfo ci) {
         if (ReplayState.INSTANCE.isReplayActive()) {
             ci.cancel();
         }

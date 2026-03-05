@@ -71,7 +71,8 @@ class ReplayPacketSender(
             SignEditorOpenS2CPacket::class.java,
             StatisticsS2CPacket::class.java,
             ExperienceBarUpdateS2CPacket::class.java,
-            PlayerAbilitiesS2CPacket::class.java,
+            // Note: PlayerAbilitiesS2CPacket is NOT blocked - it must be replayed
+            // so the player gets correct game mode and flying state from the capture.
             // Recipes/advancements cause UI noise
             SynchronizeRecipesS2CPacket::class.java,
             AdvancementUpdateS2CPacket::class.java,
