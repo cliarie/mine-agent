@@ -5,6 +5,7 @@ import dev.replaycraft.mcap.capture.RawPacketCapture
 import dev.replaycraft.mcap.capture.RecordingEventHandler
 import dev.replaycraft.mcap.capture.TickRingBuffer
 import dev.replaycraft.mcap.video.VideoRecorder
+import dev.replaycraft.mcap.ml.MlPipeline
 import dev.replaycraft.mcap.native.NativeBridge
 import dev.replaycraft.mcap.replay.McapReplayClientBridge
 import net.fabricmc.api.ClientModInitializer
@@ -33,12 +34,17 @@ object McapReplayClient : ClientModInitializer {
 
     private val videoRecorder = VideoRecorder()
 
+    // ML data capture pipeline (Arrow IPC tick stream + events + S3 upload)
+    private lateinit var mlPipeline: MlPipeline
+
     override fun onInitializeClient() {
         NativeBridge.ensureLoaded()
 
         writer = CaptureWriter(captureBuffer, client.runDirectory.absolutePath)
+        mlPipeline = MlPipeline(client.runDirectory.absolutePath)
 
         ClientLifecycleEvents.CLIENT_STOPPING.register(ClientLifecycleEvents.ClientStopping {
+            mlPipeline.shutdown()
             writer.stop()
         })
 
@@ -80,6 +86,11 @@ object McapReplayClient : ClientModInitializer {
             if (wasInWorld && !isInWorld && (replay == null || !replay.isActive)) {
                 println("[MCAP] World disconnected, flushing capture data")
                 writer.flush()
+                mlPipeline.endSession()
+            }
+            if (!wasInWorld && isInWorld && (replay == null || !replay.isActive)) {
+                // Player joined a world — start ML capture session
+                mlPipeline.startSession(client)
             }
             wasInWorld = isInWorld
 
@@ -164,6 +175,9 @@ object McapReplayClient : ClientModInitializer {
             
             // Inject synthetic packets for local player state (position, equipment, animation)
             RecordingEventHandler.onPlayerTick()
+            
+            // ML pipeline: capture tick-level game state to Arrow IPC
+            mlPipeline.onTick(client)
             
             // Tick both capture systems
             PacketCapture.onTick()
