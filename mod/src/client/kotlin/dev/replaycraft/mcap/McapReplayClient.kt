@@ -63,13 +63,22 @@ object McapReplayClient : ClientModInitializer {
         var lastPlayPauseKeyState = false
         var lastPrevKeyState = false
         var lastNextKeyState = false
-        var lastExitKeyState = false
-        var lastSaveQuitKeyState = false
+        
+        // Track whether player was in a world last tick (to detect disconnect)
+        var wasInWorld = false
         
         // Handle keybindings on client tick
         ClientTickEvents.END_CLIENT_TICK.register(ClientTickEvents.EndTick { _ ->
             val window = client.window.handle
             val replay = McapReplayClientBridge.getActiveReplay()
+
+            // Detect world disconnect: flush capture data so session appears in Replay Center
+            val isInWorld = client.player != null && client.world != null
+            if (wasInWorld && !isInWorld && (replay == null || !replay.isActive)) {
+                println("[MCAP] World disconnected, flushing capture data")
+                writer.flush()
+            }
+            wasInWorld = isInWorld
 
             if (replay != null && replay.isActive) {
                 // Use direct GLFW key checking for all replay controls (more reliable)
@@ -102,34 +111,13 @@ object McapReplayClient : ClientModInitializer {
                 }
                 lastNextKeyState = nextKeyDown
 
-                // Exit replay (R key) - return to title screen
-                val exitKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
-                if (exitKeyDown && !lastExitKeyState) {
-                    lastExitKeyState = exitKeyDown
-                    replay.stop()
-                    McapReplayClientBridge.clearActiveReplay()
-                    return@EndTick
-                }
-                lastExitKeyState = exitKeyDown
-
                 replay.onClientTick(client)
             } else {
-                // R key when in a world (not replay): save session and quit to title screen
-                val saveQuitKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
-                if (saveQuitKeyDown && !lastSaveQuitKeyState && client.player != null && client.currentScreen == null) {
-                    println("[MCAP] R pressed: saving session and quitting to title screen")
-                    writer.flush()
-                    client.world?.disconnect()
-                    client.disconnect()
-                }
-                lastSaveQuitKeyState = saveQuitKeyDown
-
                 // Reset replay control states when replay not active
                 lastPlayPauseKeyState = false
                 lastStepKeyState = false
                 lastPrevKeyState = false
                 lastNextKeyState = false
-                lastExitKeyState = false
             }
         })
 

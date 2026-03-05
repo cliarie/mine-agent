@@ -165,9 +165,9 @@ class ReplayHandler {
         }
         fakeConnection = networkManager
 
-        // Set up the initial packet listener (login handler, will be replaced by GameJoin)
+        // Set up the initial packet listener (login handler, will transition to play handler)
         // MC 1.20.1 signature: (ClientConnection, MinecraftClient, ServerInfo?, Screen?, boolean, Duration, Consumer<Text>)
-        networkManager.setPacketListener(ClientLoginNetworkHandler(
+        val loginHandler = ClientLoginNetworkHandler(
             networkManager,
             client,
             null,  // serverInfo
@@ -175,7 +175,8 @@ class ReplayHandler {
             false, // newWorld
             Duration.ZERO, // worldLoadTime
             { }    // statusConsumer
-        ))
+        )
+        networkManager.setPacketListener(loginHandler)
 
         // Create the EmbeddedChannel with our sender in the pipeline
         channel = EmbeddedChannel()
@@ -198,7 +199,21 @@ class ReplayHandler {
         setupDelayTicks = 0
 
         println("[MCAP] Fake connection established, starting packet replay for: $sessionName")
-        println("[MCAP] Press G to play/pause, R to exit replay")
+
+        // Directly trigger the LOGIN → PLAY state transition.
+        // We call onSuccess() on the login handler directly instead of going through
+        // the EmbeddedChannel pipeline, which doesn't reliably trigger channelRead.
+        // This creates the ClientPlayNetworkHandler and sets it as the packet listener,
+        // allowing all subsequent PLAY state packets to be processed correctly.
+        val uuid = try {
+            java.util.UUID.fromString(client.session.uuid)
+        } catch (_: Exception) {
+            java.util.UUID.randomUUID()
+        }
+        val profile = com.mojang.authlib.GameProfile(uuid, client.session.username)
+        val loginSuccess = net.minecraft.network.packet.s2c.login.LoginSuccessS2CPacket(profile)
+        loginHandler.onSuccess(loginSuccess)
+        println("[MCAP] Login-to-play transition complete, ClientPlayNetworkHandler active")
 
         // Send the initial batch of packets (tick 0) which should include GameJoinS2CPacket
         // This sets up the world, player entity, etc.
@@ -460,7 +475,7 @@ class ReplayHandler {
         val worldStatus = if (worldLoaded) "World loaded" else "Loading..."
         ctx.drawText(MinecraftClient.getInstance().textRenderer, worldStatus, 8, 32, 0xAAAAAA, true)
 
-        val controls = "G=Play/Pause  .=Step  [/]=Prev/Next  V=Video  R=Exit"
+        val controls = "G=Play/Pause  .=Step  [/]=Prev/Next  V=Video"
         ctx.drawText(MinecraftClient.getInstance().textRenderer, controls, 8, 44, 0xAAAAAA, true)
     }
 }
