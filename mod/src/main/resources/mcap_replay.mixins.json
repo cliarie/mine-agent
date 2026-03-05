@@ -10,10 +10,12 @@
     "ClientPlayNetworkHandlerMixin",
     "ClientPlayerEntityMixin",
     "ClientPlayerInteractionManagerMixin",
+    "MouseMixin",
     "PacketCaptureMixin",
     "PlayerEntityMixin",
     "TitleScreenMixin",
-    "WorldMixin"
+    "WorldMixin",
+    "WorldRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1

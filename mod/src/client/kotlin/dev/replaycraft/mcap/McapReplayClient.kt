@@ -13,6 +13,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback
 import net.minecraft.client.MinecraftClient
+import net.minecraft.client.gui.screen.GameMenuScreen
 import net.minecraft.client.option.KeyBinding
 import net.minecraft.client.util.InputUtil
 import org.lwjgl.glfw.GLFW
@@ -64,6 +65,7 @@ object McapReplayClient : ClientModInitializer {
         var lastPrevKeyState = false
         var lastNextKeyState = false
         var lastExitKeyState = false
+        var wasScreenOpen = false // Track if a screen was open last tick (for Escape exit logic)
         
         // Track whether player was in a world last tick (to detect disconnect)
         var wasInWorld = false
@@ -112,14 +114,32 @@ object McapReplayClient : ClientModInitializer {
                 }
                 lastNextKeyState = nextKeyDown
 
-                // Exit replay (R key) - return to title screen
-                val exitKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
-                if (exitKeyDown && !lastExitKeyState && client.currentScreen == null) {
-                    lastExitKeyState = exitKeyDown
+                // Exit replay (Escape key) - return to title screen
+                // We must distinguish between "Escape to close a screen" and
+                // "Escape to exit replay". If a screen was open last tick and
+                // is now null, Escape just closed it — don't exit replay.
+                // Only exit when Escape is pressed and no screen was open on
+                // the previous tick either.
+                val escapePressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_ESCAPE) == GLFW.GLFW_PRESS
+                val gameMenuOpened = client.currentScreen is GameMenuScreen
+                val screenJustClosed = wasScreenOpen && client.currentScreen == null
+                if (gameMenuOpened && !wasScreenOpen) {
+                    // GameMenuScreen opened from no-screen state = user wants to exit
+                    client.setScreen(null)
+                    lastExitKeyState = escapePressed
+                    wasScreenOpen = false
+                    replay.stop()
+                    return@EndTick
+                } else if (escapePressed && !lastExitKeyState && client.currentScreen == null && !screenJustClosed) {
+                    // Raw GLFW fallback: Escape pressed, no screen open, and no screen
+                    // was open last tick (so this isn't a close-screen Escape)
+                    lastExitKeyState = escapePressed
+                    wasScreenOpen = false
                     replay.stop()
                     return@EndTick
                 }
-                lastExitKeyState = exitKeyDown
+                lastExitKeyState = escapePressed
+                wasScreenOpen = client.currentScreen != null
 
                 replay.onClientTick(client)
             } else {
@@ -129,6 +149,7 @@ object McapReplayClient : ClientModInitializer {
                 lastPrevKeyState = false
                 lastNextKeyState = false
                 lastExitKeyState = false
+                wasScreenOpen = false
             }
         })
 

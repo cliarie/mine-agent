@@ -1,39 +1,49 @@
 # mine-agent: High-Fidelity Minecraft Gameplay Capture & Replay
 
-A system for recording, replaying, and simulating Minecraft gameplay at tick resolution (20Hz). Inspired by [ReplayMod](https://github.com/ReplayMod/), it captures **all** server-to-client packets at the Netty pipeline level for storage and analysis. Live in-game replay uses a fake `ClientConnection` + `EmbeddedChannel` (like ReplayMod's `ReplayHandler`) to dispatch all captured S2C packets through the normal Minecraft packet handling pipeline, giving full first-person replay including inventory, crafting, chests, entity updates, block changes, and all UI screens.
+A system for recording, replaying, and simulating Minecraft gameplay at tick resolution (20Hz). Modeled after [ReplayMod](https://github.com/ReplayMod/), it captures **all** server-to-client packets at the Netty pipeline level plus synthetic packets for local-player-only events (block breaking, sounds, animations) that the server never sends back to the acting player. Replay uses a fake `ClientConnection` + `EmbeddedChannel` (like ReplayMod's `ReplayHandler`) to dispatch every captured packet through the normal Minecraft networking pipeline, producing a pixel-perfect first-person replay — including inventory, crafting, chests, entities, block changes, cursor movement, arm swing, and all UI screens a real player would see.
 
 ## Architecture
 
 ```
-                    Minecraft Client (1.20.1 Fabric)
-                    ================================
-                              |
-              +---------------+----------------+
-              |                                |
-        TickRingBuffer                  RawPacketCapture
-    (48-byte tick records)        (Netty pipeline S2C packets)
-     - position, rotation          - ALL decoded packets
-     - input flags (WASD, etc)     - millisecond timestamps
-     - mouse buttons               - tick numbers
-     - health, food, XP            - packet IDs + data
-     - velocity, cursor
-     - screen type
-              |                                |
-              +---------------+----------------+
-                              |
-                        CaptureWriter
-                     (background thread)
-                              |
-                    +---------+---------+
-                    |                   |
-              chunks/*.cap         packets.bin
-            (LZ4-compressed       (raw packet stream,
-             tick records)         v2 format with u32 dataLen)
-                    |                   |
-                    +------- + ---------+
-                             |
-                       capture.sqlite
-                     (chunk index DB)
+              Minecraft Client (1.20.1 Fabric)
+              ================================
+                          |
+          +---------------+----------------+
+          |                                |
+    TickRingBuffer                  RawPacketCapture
+ (48-byte tick records)        (Netty pipeline S2C packets)
+  - position, rotation          - ALL decoded server packets
+  - input flags (WASD, etc)     - millisecond timestamps
+  - mouse buttons, cursor       - tick numbers
+  - health, food, XP            - packet IDs + raw data
+  - velocity, screen type
+          |                                |
+          |       RecordingEventHandler    |
+          |       (synthetic packets)      |
+          |        - player position       |
+          |        - equipment changes     |
+          |        - arm swing animation   |
+          |        - block break progress  |
+          |        - block break particles |
+          |        - block break sounds    |
+          |        - entity spawn snapshot |
+          |        - inventory slot diffs  |
+          |                                |
+          +---------------+----------------+
+                          |
+                    CaptureWriter
+                  (background thread)
+                          |
+                +---------+---------+
+                |                   |
+          chunks/*.cap         packets.bin
+        (LZ4-compressed       (raw packet stream,
+         tick records)         v2 format with u32 dataLen)
+                |                   |
+                +------- + ---------+
+                         |
+                   capture.sqlite
+                  (chunk index DB)
 ```
 
 ### Components
@@ -50,7 +60,7 @@ A system for recording, replaying, and simulating Minecraft gameplay at tick res
 
 - Java 17 (OpenJDK)
 - Rust toolchain (stable)
-- Minecraft 1.20.1 with Fabric Loader
+- Minecraft 1.20.1 with Fabric Loader + Fabric API
 
 ### Building
 
@@ -64,42 +74,66 @@ cd mod
 ./gradlew build
 ```
 
-The mod JAR will be in `mod/build/libs/`. Copy it to your Minecraft `mods/` folder.
+The mod JAR will be in `mod/build/libs/`. Copy it to your Minecraft `mods/` folder alongside Fabric API.
 
 ### Recording Gameplay
 
 1. Launch Minecraft with the mod installed
-2. Join a world or server -- recording starts automatically
-3. Play normally. Every tick (50ms) is captured:
-   - All movement inputs (WASD, jump, sneak, sprint)
-   - Mouse buttons and cursor position
-   - Player position, rotation, velocity
-   - Health, food, XP level
-   - Current screen type (inventory, chest, crafting, etc.)
-   - **Every S2C packet** the server sends (entity updates, block changes, chat, particles, etc.)
+2. Join a world or server — recording starts automatically on game join
+3. Play normally. Every tick (50ms), two data streams are captured:
+
+**Tick records** (48-byte fixed-size, 20Hz):
+- All movement inputs (WASD, jump, sneak, sprint)
+- Mouse buttons and cursor screen position
+- Player position (x, y, z), rotation (yaw, pitch), velocity
+- Health, food, XP level
+- Current screen type (inventory, chest, crafting, furnace, etc.)
+
+**Network packets** (variable-size, timestamped):
+- **Every S2C packet** the server sends (entity updates, block changes, chat, particles, etc.)
+- **Synthetic packets** injected for local-player-only events the server never sends back:
+  - `PlayerPositionLookS2CPacket` — player's own position/rotation
+  - `EntityEquipmentUpdateS2CPacket` — held item changes
+  - `EntityAnimationS2CPacket` — arm swing animation
+  - `BlockBreakingProgressS2CPacket` — block crack overlay (from `WorldRendererMixin`)
+  - `WorldEventS2CPacket` — block break particles, event ID 2001 (from `WorldMixin`)
+  - `PlaySoundS2CPacket` — block break/place sounds (from `WorldMixin`)
+  - `EntitySpawnS2CPacket` — initial snapshot of all entities already in the world
+  - `InventoryS2CPacket` / `ScreenHandlerSlotUpdateS2CPacket` — inventory item movements
 
 Data is saved to `.minecraft/mcap_replay/sessions/<timestamp>/`.
 
 ### Replaying
 
-While in-game, press:
+Replay is launched from the **Replay Center** button on the Minecraft title screen (between Realms and Options). Select a recorded session and click "Load Replay" to start.
+
+**Replay controls** (during replay):
 
 | Key | Action |
 |-----|--------|
-| `R` | Start/stop replay mode |
-| `G` | Play/pause |
-| `.` | Step one tick |
+| `G` | Play/pause (or restart if at end) |
+| `.` | Step one tick forward (when paused) |
 | `[` / `]` | Previous/next session |
-| `V` | Toggle video recording |
+| `Escape` | Exit replay → return to title screen |
+| `V` | Toggle video recording (ffmpeg) |
 
-During replay, the mod:
-1. Disconnects from the current world and creates a fake `ClientConnection`
-2. Feeds all captured S2C packets through the normal MC packet handling pipeline
-3. Sets player position/rotation from tick records for smooth first-person camera
-4. Applies hotbar slot changes and arm swing animations
-5. All UI packets (inventory, chests, crafting, etc.) work automatically
+**What happens during replay:**
 
-This uses the same architecture as ReplayMod's `ReplayHandler`: a fake `ClientConnection` with an `EmbeddedChannel` pipeline, so packets are processed exactly as if coming from a real server. When replay ends, you return to the title screen.
+1. A fake `ClientConnection` + `EmbeddedChannel` is created (matching ReplayMod's `ReplayHandler`)
+2. All captured S2C packets are fed through the normal MC packet pipeline via `fireChannelRead()`
+3. Tick records overlay position/rotation/hotbar for smooth first-person camera with interpolation
+4. Arm swing animations are manually ticked (since `tickMovement()` is cancelled)
+5. Client-side inventory (E key) is opened/closed from tick record `screenType` field
+6. Server-mediated screens (chests, crafting tables, furnaces) replay via `OpenScreenS2CPacket`
+7. Inventory item movements replay via captured slot update packets
+8. Cursor position is replayed from tick records via GLFW when inventory screens are open
+9. Mouse input is suppressed: cursor movement (prevents camera jitter), scroll (prevents hotbar changes), and clicks on container screens (prevents item movement)
+10. Cursor is locked (hidden) when no screen is open, free when inventory/containers are shown
+11. Entity spawn snapshot ensures creatures (cows, pigs, villagers, creepers, etc.) present before recording started appear in the replay
+12. Block breaking shows full animation: crack overlay, break particles, and break sounds
+13. Yaw is unwrapped across the ±327° encoding boundary for smooth continuous rotation
+
+When replay ends, `Escape` returns to the title screen. Pressing `G` at the end restarts the replay from tick 0.
 
 ### Exporting to JSON
 
@@ -112,7 +146,7 @@ Each line is a JSON object for one tick:
 ```json
 {
   "tick": 42,
-  "flags": {"forward": true, "back": false, "left": false, "right": false, "jump": false, "sneak": false, "sprint": true, ...},
+  "flags": {"forward": true, "back": false, "left": false, "right": false, "jump": false, "sneak": false, "sprint": true},
   "hotbar": 0,
   "mouse_buttons": {"left": true, "right": false, "middle": false},
   "yaw": 45.0,
@@ -169,8 +203,8 @@ The simulator replays inputs through a simplified Minecraft physics model and co
 | 32-35 | f32 | velX | Velocity X |
 | 36-39 | f32 | velY | Velocity Y |
 | 40-43 | f32 | velZ | Velocity Z |
-| 44-45 | i16 | cursorX | Cursor screen X (scaled) |
-| 46-47 | i16 | cursorY | Cursor screen Y (scaled) |
+| 44-45 | i16 | cursorX | Cursor screen X (divided by scaleFactor during capture) |
+| 46-47 | i16 | cursorY | Cursor screen Y (divided by scaleFactor during capture) |
 
 ### Packet Storage (packets.bin v2)
 
@@ -195,10 +229,35 @@ Payload:
 
 1. **Netty pipeline capture** (not selective mixins): A `ChannelInboundHandlerAdapter` after the decoder intercepts ALL decoded S2C packets. This matches ReplayMod's approach and ensures no packet types are missed.
 
-2. **Full packet replay via fake connection**: All captured S2C packets are dispatched through a fake `ClientConnection` + `EmbeddedChannel` during replay, matching ReplayMod's `ReplayHandler` architecture. This means inventory screens, chest UIs, entity updates, block changes, and all other server-driven state work automatically during replay. A `ReplayPacketSender` (Netty `ChannelDuplexHandler`) whitelists safe packet types and feeds them into the pipeline. Tick records provide position/rotation/hotbar as a secondary overlay for smooth camera tracking.
+2. **Full packet replay via fake connection**: All captured S2C packets are dispatched through a fake `ClientConnection` + `EmbeddedChannel` during replay, matching ReplayMod's `ReplayHandler` architecture. This means inventory screens, chest UIs, entity updates, block changes, and all other server-driven state work automatically during replay. A `ReplayPacketSender` (Netty `ChannelInboundHandlerAdapter`) filters out problematic packet types via a blacklist, and feeds the rest into the pipeline via `fireChannelRead()`. Tick records provide position/rotation/hotbar/cursor as a secondary overlay for smooth camera and UI tracking.
 
-3. **Synthetic packet injection**: The server never sends the local player their own position/equipment/animation packets. `RecordingEventHandler` injects these as synthetic S2C packets so they appear in the capture stream.
+3. **Synthetic packet injection for local-player events**: The Minecraft server never sends the acting player their own position, equipment, animation, block break progress, block break particles, or block break sounds. These are client-side-only events. Mixin hooks in `WorldRendererMixin` (block crack animation), `WorldMixin` (world events + sounds), and `RecordingEventHandler` (position, equipment, arm swing, entity snapshot, inventory diffs) inject synthetic S2C packets into the capture stream so replays are complete.
 
-4. **u32 dataLen**: Packet data lengths use u32 (not u16) to handle large packets like `ChunkDataS2CPacket` which can exceed 64KB.
+4. **Three-layer block breaking capture** (matching ReplayMod):
+   - `BlockBreakingProgressS2CPacket` — crack overlay animation stages (via `WorldRendererMixin`)
+   - `WorldEventS2CPacket` — block break particles, event ID 2001 (via `WorldMixin.syncWorldEvent`)
+   - `PlaySoundS2CPacket` — block break/place sounds (via `WorldMixin.playSound`)
 
-5. **Tick + millisecond timestamps**: Each packet has both a tick number (for replay synchronization) and a millisecond timestamp (for accurate timing within a tick).
+5. **Mouse suppression during replay**: `MouseMixin` cancels `onCursorPos` (prevents camera jitter from live mouse), `onMouseScroll` (prevents hotbar changes), and `onMouseButton` on container screens (prevents item movement). Cursor position during inventory screens is replayed from tick records via GLFW.
+
+6. **Smooth interpolation**: Position and rotation use previous-tick tracking for MC's built-in lerp (partial tick fraction). Yaw is unwrapped across the i16 encoding boundary (±327°) to prevent 655° spin artifacts. Cursor position is applied directly from tick records when screens are open.
+
+7. **u32 dataLen**: Packet data lengths use u32 (not u16) to handle large packets like `ChunkDataS2CPacket` which can exceed 64KB.
+
+8. **Tick + millisecond timestamps**: Each packet has both a tick number (for replay synchronization) and a millisecond timestamp (for accurate timing within a tick).
+
+## Comparison with ReplayMod
+
+This system is modeled after [ReplayMod](https://github.com/ReplayMod/) but differs in several ways:
+
+| Feature | ReplayMod | mine-agent |
+|---------|-----------|------------|
+| POV | Third-person free camera | First-person (player's eyes) |
+| Tick records | Not stored (packets only) | 48-byte records at 20Hz with full input state |
+| Packet capture | Netty pipeline | Netty pipeline (same approach) |
+| Synthetic packets | Position, equipment, sounds, world events | Same + inventory diffs, entity snapshot |
+| Replay connection | Fake `ClientConnection` + `EmbeddedChannel` | Same architecture |
+| Storage | MCPR (zip of TMCPR + metadata) | SQLite index + LZ4 chunks + raw packet stream |
+| Export | Video rendering | JSON Lines + video + tick-by-tick simulator |
+| Cursor replay | Not applicable (third-person) | GLFW cursor positioning from tick records |
+| Screen replay | Not applicable (third-person) | Client-side inventory + server-mediated containers |

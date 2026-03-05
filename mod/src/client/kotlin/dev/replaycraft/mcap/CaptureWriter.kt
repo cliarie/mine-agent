@@ -63,6 +63,18 @@ class CaptureWriter(
             }
         }
 
+        // Final drain: capture any remaining packets/ticks before closing session.
+        // Without this, packets added after the last loop iteration are lost.
+        val finalDrained = buffer.drainToByteArray(tickBatch)
+        if (finalDrained > 0) {
+            if (currentStartTick < 0) currentStartTick = buffer.lastDrainedStartTick
+            NativeBridge.nativeAppendTicks(sessionHandle, currentStartTick, tickBatch, finalDrained)
+        }
+        val finalPackets = RawPacketCapture.drainPackets()
+        if (finalPackets.isNotEmpty()) {
+            NativeBridge.nativeAppendPackets(sessionHandle, finalPackets, finalPackets.size)
+        }
+
         PacketCapture.stopCapture()
         RawPacketCapture.stopCapture()
         NativeBridge.nativeCloseSession(sessionHandle)

@@ -86,11 +86,16 @@ object RawPacketCapture {
             // -1 stored as u16 becomes 65535, causing decoder errors during replay.
             if (packetId < 0) return
 
+            // Use try/finally to guarantee ByteBuf release even if packet.write() throws.
             val buf = PacketByteBuf(Unpooled.buffer())
-            packet.write(buf)
-            val data = ByteArray(buf.readableBytes())
-            buf.readBytes(data)
-            buf.release()
+            val data: ByteArray
+            try {
+                packet.write(buf)
+                data = ByteArray(buf.readableBytes())
+                buf.readBytes(data)
+            } finally {
+                buf.release()
+            }
 
             val timestampMs = (System.currentTimeMillis() - startTimeMs).toInt()
             queue.add(CapturedRawPacket(currentTick, timestampMs, packetId, data))

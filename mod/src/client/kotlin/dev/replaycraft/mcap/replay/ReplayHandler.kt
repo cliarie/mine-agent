@@ -9,6 +9,9 @@ import io.netty.channel.ChannelPromise
 import io.netty.util.ReferenceCountUtil
 import io.netty.channel.embedded.EmbeddedChannel
 import net.minecraft.client.MinecraftClient
+import net.minecraft.client.gui.screen.DownloadingTerrainScreen
+import net.minecraft.client.gui.screen.ingame.InventoryScreen
+import net.minecraft.client.gui.screen.ingame.CraftingScreen
 import net.minecraft.client.network.ClientLoginNetworkHandler
 import net.minecraft.network.ClientConnection
 import net.minecraft.network.DecoderHandler
@@ -18,6 +21,7 @@ import net.minecraft.network.PacketBundler
 import net.minecraft.network.PacketByteBuf
 import net.minecraft.network.PacketEncoder
 import net.minecraft.network.packet.s2c.login.LoginSuccessS2CPacket
+import net.minecraft.client.gui.screen.TitleScreen
 import java.io.File
 import java.time.Duration
 
@@ -71,6 +75,16 @@ class ReplayHandler {
 
     // Track whether the initial world has been set up via GameJoinS2CPacket
     private var worldLoaded: Boolean = false
+
+    // Track GUI readiness: don't auto-play until the DownloadingTerrainScreen is gone
+    // and the world is visually rendered. Like ReplayMod's hasWorldLoaded flag.
+    private var guiReady: Boolean = false
+    private var guiWaitTicks: Int = 0
+    private val MAX_GUI_WAIT_TICKS = 100 // 5 seconds max wait
+
+    // Whether to auto-play once GUI is ready. Set to true for initial load,
+    // but preserved as wasPlaying for session switches so user's pause state is respected.
+    private var autoPlayAfterGuiReady: Boolean = true
 
 
     /**
@@ -229,6 +243,23 @@ class ReplayHandler {
         isPlaying = false
         tick = 0
         worldLoaded = false
+        guiReady = false
+        guiWaitTicks = 0
+
+        // Reset interpolation and screen state for fresh session
+        prevTickX = Double.NaN
+        prevTickY = Double.NaN
+        prevTickZ = Double.NaN
+        prevTickYaw = Float.NaN
+        prevTickPitch = Float.NaN
+        accumulatedYaw = Float.NaN
+        prevYawFp = 0
+        hasPrevYawFp = false
+        prevScreenType = 0
+        prevCursorX = Double.NaN
+        prevCursorY = Double.NaN
+        cursorX = Double.NaN
+        cursorY = Double.NaN
 
         println("[MCAP] Fake connection established with full ReplayMod pipeline for: $sessionName")
 
@@ -308,14 +339,31 @@ class ReplayHandler {
 
         worldLoaded = true
         tick = setupEnd + 1 // Start playback after setup ticks (avoids re-dispatching last setup tick)
+
+        // Close DownloadingTerrainScreen manually (matching ReplayMod lines 869-873).
+        // MC shows this screen after GameJoinS2CPacket until PlayerPositionLookS2CPacket
+        // arrives and the world finishes loading. In replay, we need to close it manually.
+        val mc = MinecraftClient.getInstance()
+        val currentScreen = mc.currentScreen
+        if (currentScreen is DownloadingTerrainScreen) {
+            mc.setScreen(null)
+            println("[MCAP] Closed DownloadingTerrainScreen manually")
+        }
+
         if (tick >= maxTick) {
             // Short session: all ticks already dispatched during setup
             tick = maxTick
             isPlaying = false
+            guiReady = true
             println("[MCAP] World setup complete, short session fully dispatched (tick $tick)")
         } else {
-            isPlaying = true // Auto-play immediately after world setup
-            println("[MCAP] World setup complete, auto-playing from tick $tick")
+            // Don't auto-play yet - wait for GUI to fully render.
+            // The terrain needs a few frames to actually appear on screen.
+            isPlaying = false
+            guiReady = false
+            guiWaitTicks = 0
+            autoPlayAfterGuiReady = true  // Default: auto-play for initial load
+            println("[MCAP] World setup complete, waiting for GUI to render before auto-play...")
         }
     }
 
@@ -331,34 +379,70 @@ class ReplayHandler {
             replayHandle = -1
         }
 
-        // Close the embedded channel
+        // Mark replay as inactive BEFORE disconnect so mixins stop interfering
+        isActive = false
+        ReplayState.setReplayActive(false)
+        isPlaying = false
+        worldLoaded = false
+        guiReady = false
+
+        // Clear the bridge reference so McapReplayClient stops checking this handler
+        McapReplayClientBridge.clearActiveReplay()
+
+        // Disconnect from the fake world BEFORE closing channel
+        // (client.disconnect() needs the connection to still be functional)
+        client.disconnect()
+
+        // Now close the embedded channel
         channel?.close()
         channel = null
         packetSender = null
         fakeConnection = null
 
-        isActive = false
-        ReplayState.setReplayActive(false)
-        isPlaying = false
-        worldLoaded = false
-
-        // Clear the bridge reference so McapReplayClient stops checking this handler
-        McapReplayClientBridge.clearActiveReplay()
-
-        // Disconnect from the fake world and return to title
-        client.disconnect()
+        // Explicitly navigate to title screen in case disconnect didn't
+        client.setScreen(TitleScreen())
 
         println("[MCAP] Replay stopped, returned to title screen")
     }
 
     fun togglePlayPause() {
         if (!isActive) return
+        // If at the end of replay, restart from beginning
+        if (tick >= maxTick) {
+            restartReplay()
+            return
+        }
         isPlaying = !isPlaying
         println("[MCAP] Replay ${if (isPlaying) "playing" else "paused"} at tick $tick")
     }
 
+    /**
+     * Restart replay from the beginning by re-opening the same session.
+     * This creates a fresh fake connection and re-fires initial packets.
+     */
+    fun restartReplay() {
+        if (!isActive) return
+        println("[MCAP] Restarting replay from beginning...")
+
+        // Close current channel but keep the handler active
+        channel?.close()
+        channel = null
+        packetSender = null
+        fakeConnection = null
+        worldLoaded = false
+        guiReady = false
+
+        // Re-open the same session (creates fresh connection + initial packets)
+        openSelectedSession()
+        // If openSelectedSession() failed, stop to avoid broken state
+        if (replayHandle < 0) {
+            stop()
+            return
+        }
+    }
+
     fun stepOneTick(client: MinecraftClient) {
-        if (!isActive || !worldLoaded) return
+        if (!isActive || !worldLoaded || !guiReady) return
         if (isPlaying) return
         if (tick >= maxTick) return // Already at end, don't re-dispatch
         dispatchTickPackets(client)
@@ -371,6 +455,43 @@ class ReplayHandler {
      */
     fun onClientTick(client: MinecraftClient) {
         if (!isActive || !worldLoaded) return
+
+        // Ensure cursor is locked (invisible) during replay when no screen is open.
+        // Without this, the cursor can remain visible during normal gameplay view
+        // because the replay setup flow doesn't always trigger Mouse.lockCursor().
+        if (client.currentScreen == null && !client.mouse.isCursorLocked) {
+            client.mouse.lockCursor()
+        }
+
+        // Wait for GUI to be ready before starting auto-play.
+        // This ensures the terrain is visually rendered before playback begins,
+        // not just loaded in the terminal. Matching ReplayMod's approach of
+        // waiting for DownloadingTerrainScreen to close + a few render frames.
+        if (!guiReady) {
+            guiWaitTicks++
+            val screen = client.currentScreen
+
+            // Close DownloadingTerrainScreen if still showing
+            if (screen is DownloadingTerrainScreen) {
+                client.setScreen(null)
+                println("[MCAP] Closed lingering DownloadingTerrainScreen")
+            }
+
+            // Wait until: no blocking screen + world exists + waited at least 10 ticks (0.5s)
+            // for the renderer to catch up, OR timeout after MAX_GUI_WAIT_TICKS
+            val noBlockingScreen = client.currentScreen == null
+            val worldExists = client.world != null && client.player != null
+            val rendererReady = guiWaitTicks >= 10
+            val timedOut = guiWaitTicks >= MAX_GUI_WAIT_TICKS
+
+            if ((noBlockingScreen && worldExists && rendererReady) || timedOut) {
+                guiReady = true
+                isPlaying = autoPlayAfterGuiReady
+                println("[MCAP] GUI ready after $guiWaitTicks ticks, ${if (isPlaying) "auto-playing" else "paused"} from tick $tick")
+            }
+            return
+        }
+
         if (!isPlaying) return
 
         if (tick % 100 == 0) {
@@ -404,10 +525,43 @@ class ReplayHandler {
         applyTickRecord(client)
     }
 
+    // Track previous tick's position/rotation for smooth interpolation
+    private var prevTickX = Double.NaN
+    private var prevTickY = Double.NaN
+    private var prevTickZ = Double.NaN
+    private var prevTickYaw = Float.NaN
+    private var prevTickPitch = Float.NaN
+
+    // Track accumulated yaw for unwrapping i16-encoded values.
+    // The tick record stores yaw as i16(yaw * 100), range ±327.67°.
+    // MC yaw can exceed this range with continuous rotation, so consecutive
+    // stored values may wrap at the i16 boundary (e.g., 328° wraps to -327°).
+    // We unwrap by computing deltas using i16 arithmetic (which naturally
+    // wraps at ±32768) and accumulating them.
+    private var accumulatedYaw = Float.NaN
+    private var prevYawFp: Short = 0
+    private var hasPrevYawFp = false
+
+    // Track previous screen type for detecting open/close transitions
+    private var prevScreenType: Int = 0
+
+    // Track cursor position for smooth replay in inventory screens.
+    // Stored as scaled screen coordinates (i16) in tick record bytes 44-47.
+    // We interpolate between prev and current for smooth cursor movement at >20Hz.
+    private var prevCursorX: Double = Double.NaN
+    private var prevCursorY: Double = Double.NaN
+    private var cursorX: Double = Double.NaN
+    private var cursorY: Double = Double.NaN
+
     /**
      * Apply the 48-byte tick record for position, rotation, hotbar.
-     * This provides smooth camera movement even if position packets
-     * are missing or have lower resolution.
+     *
+     * Smoothness improvement: Instead of snapping prevX/Y/Z to the current
+     * position (which causes jerky movement), we set prev* fields to the
+     * PREVIOUS tick's position. This allows MC's renderer to interpolate
+     * smoothly between the previous and current positions using the partial
+     * tick value (lerp factor). This matches ReplayMod's CameraEntity approach
+     * where lastRenderX/Y/Z track the previous frame for interpolation.
      */
     private fun applyTickRecord(client: MinecraftClient) {
         val player = client.player ?: return
@@ -431,45 +585,82 @@ class ReplayHandler {
         val y = buf.float
         val z = buf.float
 
-        val yaw = yawFp.toFloat() / 100.0f
         val pitch = pitchFp.toFloat() / 100.0f
 
+        // Check position validity BEFORE modifying yaw state.
+        // This prevents accumulatedYaw from advancing while prevTickYaw stays
+        // stale (which would cause a visual rotation jump on the next valid tick).
         if (x.isNaN() || y.isNaN() || z.isNaN() || (x == 0f && y == 0f && z == 0f)) return
+
+        // Unwrap yaw using i16 delta arithmetic.
+        // The tick record stores yaw as i16(yaw * 100), which wraps at ±32768
+        // (±327.67°). A naive approach using float modulo fails because the
+        // wrapping point is at the i16 boundary, not at ±180°.
+        //
+        // By computing (yawFp - prevYawFp) as a Short, the i16 arithmetic
+        // naturally wraps: a small turn crossing the boundary produces a small
+        // delta. For example, 327° → 329° stored as 32700 → -32636 gives
+        // i16 delta = 200 → 2.00°.
+        val yaw: Float
+        if (!hasPrevYawFp) {
+            hasPrevYawFp = true
+            prevYawFp = yawFp
+            accumulatedYaw = yawFp.toFloat() / 100.0f
+            yaw = accumulatedYaw
+        } else {
+            val rawDelta = (yawFp - prevYawFp).toShort()
+            val degDelta = rawDelta.toFloat() / 100.0f
+            accumulatedYaw += degDelta
+            prevYawFp = yawFp
+            yaw = accumulatedYaw
+        }
 
         val xd = x.toDouble()
         val yd = y.toDouble()
         val zd = z.toDouble()
 
-        // Set position with full sync
+        // Smoothness: Set prev* to the PREVIOUS tick's values so MC's renderer
+        // can interpolate between prev and current using the partial tick fraction.
+        // On first tick, snap prev to current (no interpolation data yet).
+        val hasPrev = !prevTickX.isNaN()
+        val pX = if (hasPrev) prevTickX else xd
+        val pY = if (hasPrev) prevTickY else yd
+        val pZ = if (hasPrev) prevTickZ else zd
+        val pYaw = if (hasPrev) prevTickYaw else yaw
+        val pPitch = if (hasPrev) prevTickPitch else pitch
+
+        // Set current position
         player.refreshPositionAndAngles(xd, yd, zd, yaw, pitch)
-        player.prevX = xd
-        player.prevY = yd
-        player.prevZ = zd
-        player.lastRenderX = xd
-        player.lastRenderY = yd
-        player.lastRenderZ = zd
+
+        // Set interpolation fields to PREVIOUS tick's position for smooth lerp
+        player.prevX = pX
+        player.prevY = pY
+        player.prevZ = pZ
+        player.lastRenderX = pX
+        player.lastRenderY = pY
+        player.lastRenderZ = pZ
         player.setVelocity(0.0, 0.0, 0.0)
 
-        // Apply camera angles
+        // Apply camera angles with interpolation
         player.yaw = yaw
         player.pitch = pitch
         player.headYaw = yaw
         player.bodyYaw = yaw
-        player.prevYaw = yaw
-        player.prevPitch = pitch
-        player.prevHeadYaw = yaw
-        player.prevBodyYaw = yaw
+        player.prevYaw = pYaw
+        player.prevPitch = pPitch
+        player.prevHeadYaw = pYaw
+        player.prevBodyYaw = pYaw
 
         val acc = player as dev.replaycraft.mcap.mixin.EntityPrevAnglesAccessor
-        acc.mcap_setPrevYaw(yaw)
-        acc.mcap_setPrevPitch(pitch)
+        acc.mcap_setPrevYaw(pYaw)
+        acc.mcap_setPrevPitch(pPitch)
 
         val cameraEntity = client.cameraEntity
         if (cameraEntity != null && cameraEntity == player) {
             cameraEntity.yaw = yaw
             cameraEntity.pitch = pitch
-            cameraEntity.prevYaw = yaw
-            cameraEntity.prevPitch = pitch
+            cameraEntity.prevYaw = pYaw
+            cameraEntity.prevPitch = pPitch
         }
 
         if (hotbar in 0..8) {
@@ -477,9 +668,138 @@ class ReplayHandler {
         }
 
         // Handle arm swing from flags (bit 8)
+        // Since tickMovement() is cancelled during replay, we must manually
+        // trigger AND tick the arm swing animation.
         val armSwinging = (flags and (1 shl 8)) != 0
         if (armSwinging && !player.handSwinging) {
             player.swingHand(net.minecraft.util.Hand.MAIN_HAND)
+        }
+        // Manually progress the arm swing animation since tickMovement() is cancelled.
+        // In normal MC, LivingEntity.tickMovement() calls tickHandSwing() which
+        // increments handSwingTicks. getHandSwingDuration() is private, so we use
+        // the default duration of 6 ticks (same as vanilla for normal speed).
+        if (player.handSwinging) {
+            player.handSwingTicks++
+            if (player.handSwingTicks >= 6) {
+                player.handSwingTicks = 0
+                player.handSwinging = false
+            }
+        }
+
+        // --- Screen open/close from tick record ---
+        // Read remaining bytes to get to screenType at byte 29
+        // health (24-27), food (28), screenType (29)
+        if (record.size >= 30) {
+            val screenBuf = java.nio.ByteBuffer.wrap(record).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val screenType = (screenBuf.get(29).toInt() and 0xFF)
+
+            if (screenType != prevScreenType) {
+                applyScreenTransition(client, player, prevScreenType, screenType)
+                prevScreenType = screenType
+            }
+        }
+
+        // --- Cursor position from tick record (bytes 44-47) ---
+        // Read the recorded cursor position and set it via GLFW so inventory
+        // screens show the correct hover/highlight during replay.
+        if (record.size >= 48) {
+            val cursorBuf = java.nio.ByteBuffer.wrap(record).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val rawCursorX = cursorBuf.getShort(44).toDouble()
+            val rawCursorY = cursorBuf.getShort(46).toDouble()
+
+            // Shift previous → prev, current → cursor for interpolation
+            prevCursorX = if (cursorX.isNaN()) rawCursorX else cursorX
+            prevCursorY = if (cursorY.isNaN()) rawCursorY else cursorY
+            cursorX = rawCursorX
+            cursorY = rawCursorY
+
+            // Apply immediately (screens read mouse position each frame)
+            applyCursorPosition(client)
+        }
+
+        // Store this tick's values as "previous" for next tick's interpolation
+        prevTickX = xd
+        prevTickY = yd
+        prevTickZ = zd
+        prevTickYaw = yaw
+        prevTickPitch = pitch
+    }
+
+    /**
+     * Apply the recorded cursor position to the GLFW window.
+     * Called each tick during replay when a screen is open.
+     *
+     * The tick record stores cursor position as scaled screen coordinates
+     * (divided by window.scaleFactor during recording). We multiply back
+     * by scaleFactor to get raw pixel coordinates for GLFW.
+     */
+    private fun applyCursorPosition(client: MinecraftClient) {
+        // Only move cursor when a screen is open (inventory, chest, crafting, etc.)
+        if (client.currentScreen == null) return
+        if (cursorX.isNaN() || cursorY.isNaN()) return
+
+        try {
+            val scale = client.window.scaleFactor
+            val rawX = cursorX * scale
+            val rawY = cursorY * scale
+            org.lwjgl.glfw.GLFW.glfwSetCursorPos(client.window.handle, rawX, rawY)
+        } catch (_: Exception) {
+            // Ignore GLFW errors
+        }
+    }
+
+    /**
+     * Open/close screens during replay based on the recorded screenType transitions.
+     * screenType values from TickRingBuffer.classifyScreen():
+     *   0=none, 1=inventory, 2=chest, 3=crafting, 4=furnace, 5=enchant,
+     *   6=anvil, 7=brewing, 8=beacon, 9=merchant, 10=hopper, 11=shulker, 12=creative
+     *
+     * For client-side screens (inventory, creative), we directly open the screen.
+     * For server-mediated screens (chest, crafting table, furnace, etc.), the
+     * OpenScreenS2CPacket in the capture data handles it. We still handle the
+     * close transition here for all screen types.
+     */
+    private fun applyScreenTransition(
+        client: MinecraftClient,
+        player: net.minecraft.entity.player.PlayerEntity,
+        oldType: Int,
+        newType: Int
+    ) {
+        try {
+            if (newType == 0 && oldType != 0) {
+                // Screen closed — close whatever is currently open
+                if (client.currentScreen != null) {
+                    client.setScreen(null)
+                }
+            } else if (newType != 0 && oldType == 0) {
+                // Screen opened — open the appropriate screen
+                when (newType) {
+                    1 -> {
+                        // Client-side inventory (E key)
+                        client.setScreen(InventoryScreen(player))
+                    }
+                    12 -> {
+                        // Creative inventory — only works if gamemode is creative
+                        // MC opens CreativeInventoryScreen automatically for creative mode
+                        client.setScreen(InventoryScreen(player))
+                    }
+                    // Types 2-11 are server-mediated (chest, crafting, furnace, etc.)
+                    // They are handled by OpenScreenS2CPacket in the capture data.
+                    // If no packet was captured (edge case), we can't open them
+                    // because we don't have a valid ScreenHandler syncId.
+                }
+            } else if (newType != 0 && oldType != 0 && newType != oldType) {
+                // Screen type changed (e.g., inventory → crafting) without closing.
+                // Close old and open new.
+                client.setScreen(null)
+                when (newType) {
+                    1 -> client.setScreen(InventoryScreen(player))
+                    12 -> client.setScreen(InventoryScreen(player))
+                }
+            }
+        } catch (e: Exception) {
+            // Ignore screen transition errors
+            println("[MCAP] Screen transition error: ${e.message}")
         }
     }
 
@@ -496,6 +816,7 @@ class ReplayHandler {
         channel?.close()
         channel = null
         packetSender = null
+        fakeConnection = null
 
         selectedSessionIndex = (selectedSessionIndex + 1) % availableSessions.size
         openSelectedSession()
@@ -505,7 +826,9 @@ class ReplayHandler {
             stop()
             return
         }
-        isPlaying = wasPlaying
+        // Respect user's play/pause state: set autoPlayAfterGuiReady so the
+        // GUI wait loop uses the correct state instead of always auto-playing.
+        autoPlayAfterGuiReady = wasPlaying
     }
 
     fun prevSession() {
@@ -520,6 +843,7 @@ class ReplayHandler {
         channel?.close()
         channel = null
         packetSender = null
+        fakeConnection = null
 
         selectedSessionIndex = (selectedSessionIndex - 1 + availableSessions.size) % availableSessions.size
         openSelectedSession()
@@ -527,7 +851,8 @@ class ReplayHandler {
             stop()
             return
         }
-        isPlaying = wasPlaying
+        // Respect user's play/pause state
+        autoPlayAfterGuiReady = wasPlaying
     }
 
     fun renderHud(ctx: net.minecraft.client.gui.DrawContext) {
@@ -544,7 +869,9 @@ class ReplayHandler {
         val worldStatus = if (worldLoaded) "World loaded" else "Loading..."
         ctx.drawText(MinecraftClient.getInstance().textRenderer, worldStatus, 8, 32, 0xAAAAAA, true)
 
-        val controls = "G=Play/Pause  .=Step  [/]=Prev/Next  R=Exit  V=Video"
+        val atEnd = tick >= maxTick
+        val controls = if (atEnd) "G=Restart  .=Step  [/]=Prev/Next  Esc=Exit  V=Video"
+                       else "G=Play/Pause  .=Step  [/]=Prev/Next  Esc=Exit  V=Video"
         ctx.drawText(MinecraftClient.getInstance().textRenderer, controls, 8, 44, 0xAAAAAA, true)
     }
 

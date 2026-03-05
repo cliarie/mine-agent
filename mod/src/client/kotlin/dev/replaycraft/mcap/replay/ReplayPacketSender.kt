@@ -6,6 +6,7 @@ import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandler.Sharable
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
+import net.minecraft.client.MinecraftClient
 import net.minecraft.network.NetworkSide
 import net.minecraft.network.NetworkState
 import net.minecraft.network.PacketByteBuf
@@ -62,25 +63,26 @@ class ReplayPacketSender(
             SetCameraEntityS2CPacket::class.java,
             // Title packets can be distracting during replay
             TitleS2CPacket::class.java,
-            // These UI/stat packets are noise during replay
-            HealthUpdateS2CPacket::class.java,
-            OpenHorseScreenS2CPacket::class.java,
-            CloseScreenS2CPacket::class.java,
-            ScreenHandlerSlotUpdateS2CPacket::class.java,
-            ScreenHandlerPropertyUpdateS2CPacket::class.java,
-            SignEditorOpenS2CPacket::class.java,
+            // Stats/XP noise during replay
             StatisticsS2CPacket::class.java,
             ExperienceBarUpdateS2CPacket::class.java,
-            // Note: PlayerAbilitiesS2CPacket is NOT blocked - it must be replayed
-            // so the player gets correct game mode and flying state from the capture.
             // Recipes/advancements cause UI noise
             SynchronizeRecipesS2CPacket::class.java,
             AdvancementUpdateS2CPacket::class.java,
             SelectAdvancementTabS2CPacket::class.java,
             // Written book screen
             OpenWrittenBookS2CPacket::class.java,
-            // Open screen (container GUIs) - skip to avoid phantom screens
-            OpenScreenS2CPacket::class.java,
+            // Sign editor - not useful during replay
+            SignEditorOpenS2CPacket::class.java,
+            // Note: The following are NOT blocked (unlike ReplayMod) because the user
+            // wants inventory, crafting, chests, and all UIs to be captured and replayed:
+            // - OpenScreenS2CPacket (opens container GUIs: chests, crafting, furnaces)
+            // - CloseScreenS2CPacket (closes container GUIs)
+            // - ScreenHandlerSlotUpdateS2CPacket (updates slot contents)
+            // - ScreenHandlerPropertyUpdateS2CPacket (furnace progress, etc.)
+            // - HealthUpdateS2CPacket (health/food display)
+            // - OpenHorseScreenS2CPacket (horse inventory)
+            // - PlayerAbilitiesS2CPacket (game mode/flying state)
         )
     }
 
@@ -88,6 +90,9 @@ class ReplayPacketSender(
      * Process decoded packets flowing through the pipeline.
      * The DecoderHandler upstream has already converted raw ByteBuf -> Packet<?>.
      * We filter out BAD_PACKETS and pass the rest downstream to ClientConnection.
+     *
+     * Also forces immediate light updates after ChunkDataS2CPacket to speed up
+     * terrain loading (matching ReplayMod's FullReplaySender lines 462-488).
      */
     override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
         if (msg is Packet<*>) {
@@ -97,6 +102,36 @@ class ReplayPacketSender(
         }
         // Pass to next handler (ClientConnection / packet_handler)
         super.channelRead(ctx, msg)
+
+        // Force immediate light updates after chunk data packets.
+        // Without this, terrain takes a very long time to load because MC
+        // normally spreads light updates across multiple ticks. ReplayMod
+        // forces them all at once for instant terrain rendering.
+        if (msg is ChunkDataS2CPacket) {
+            forceLightUpdates()
+        }
+    }
+
+    /**
+     * Force all pending light updates to complete immediately.
+     * Matching ReplayMod's FullReplaySender: after ChunkDataS2CPacket,
+     * drain the LightingProvider's update queue so terrain is lit instantly
+     * instead of gradually over many ticks.
+     */
+    private fun forceLightUpdates() {
+        val mc = MinecraftClient.getInstance()
+        val doLightUpdates = Runnable {
+            val world = mc.world ?: return@Runnable
+            val provider = world.chunkManager.lightingProvider
+            while (provider.hasUpdates()) {
+                provider.doLightUpdates()
+            }
+        }
+        if (mc.isOnThread) {
+            doLightUpdates.run()
+        } else {
+            mc.send(doLightUpdates)
+        }
     }
 
     /**
