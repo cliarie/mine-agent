@@ -88,12 +88,11 @@ class S3Uploader {
      * For files larger than 5MB, uses multipart upload.
      */
     private fun uploadFile(file: File, s3Key: String, contentType: String): Boolean {
-        val fileBytes = file.readBytes()
-
-        if (fileBytes.size > 5 * 1024 * 1024) {
+        if (file.length() > 5 * 1024 * 1024) {
             return multipartUpload(file, s3Key, contentType)
         }
 
+        val fileBytes = file.readBytes()
         return putObject(fileBytes, s3Key, contentType)
     }
 

@@ -181,6 +181,8 @@ class MlPipeline(private val baseDir: String) {
     fun getSessionId(): String? = if (active) sessionId else null
 
     private fun cleanup() {
+        try { tickWriter?.close() } catch (_: Exception) {}
+        try { eventCapture?.close() } catch (_: Exception) {}
         tickWriter = null
         eventCapture = null
         metadata = null
