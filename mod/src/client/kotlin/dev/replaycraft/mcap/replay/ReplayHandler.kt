@@ -230,6 +230,13 @@ class ReplayHandler {
         tick = 0
         worldLoaded = false
 
+        // Reset interpolation state for fresh session
+        prevTickX = Double.NaN
+        prevTickY = Double.NaN
+        prevTickZ = Double.NaN
+        prevTickYaw = Float.NaN
+        prevTickPitch = Float.NaN
+
         println("[MCAP] Fake connection established with full ReplayMod pipeline for: $sessionName")
 
         // Our capture system starts recording at onGameJoin (PLAY state), so there's no
@@ -404,10 +411,22 @@ class ReplayHandler {
         applyTickRecord(client)
     }
 
+    // Track previous tick's position/rotation for smooth interpolation
+    private var prevTickX = Double.NaN
+    private var prevTickY = Double.NaN
+    private var prevTickZ = Double.NaN
+    private var prevTickYaw = Float.NaN
+    private var prevTickPitch = Float.NaN
+
     /**
      * Apply the 48-byte tick record for position, rotation, hotbar.
-     * This provides smooth camera movement even if position packets
-     * are missing or have lower resolution.
+     *
+     * Smoothness improvement: Instead of snapping prevX/Y/Z to the current
+     * position (which causes jerky movement), we set prev* fields to the
+     * PREVIOUS tick's position. This allows MC's renderer to interpolate
+     * smoothly between the previous and current positions using the partial
+     * tick value (lerp factor). This matches ReplayMod's CameraEntity approach
+     * where lastRenderX/Y/Z track the previous frame for interpolation.
      */
     private fun applyTickRecord(client: MinecraftClient) {
         val player = client.player ?: return
@@ -440,36 +459,48 @@ class ReplayHandler {
         val yd = y.toDouble()
         val zd = z.toDouble()
 
-        // Set position with full sync
+        // Smoothness: Set prev* to the PREVIOUS tick's values so MC's renderer
+        // can interpolate between prev and current using the partial tick fraction.
+        // On first tick, snap prev to current (no interpolation data yet).
+        val hasPrev = !prevTickX.isNaN()
+        val pX = if (hasPrev) prevTickX else xd
+        val pY = if (hasPrev) prevTickY else yd
+        val pZ = if (hasPrev) prevTickZ else zd
+        val pYaw = if (hasPrev) prevTickYaw else yaw
+        val pPitch = if (hasPrev) prevTickPitch else pitch
+
+        // Set current position
         player.refreshPositionAndAngles(xd, yd, zd, yaw, pitch)
-        player.prevX = xd
-        player.prevY = yd
-        player.prevZ = zd
-        player.lastRenderX = xd
-        player.lastRenderY = yd
-        player.lastRenderZ = zd
+
+        // Set interpolation fields to PREVIOUS tick's position for smooth lerp
+        player.prevX = pX
+        player.prevY = pY
+        player.prevZ = pZ
+        player.lastRenderX = pX
+        player.lastRenderY = pY
+        player.lastRenderZ = pZ
         player.setVelocity(0.0, 0.0, 0.0)
 
-        // Apply camera angles
+        // Apply camera angles with interpolation
         player.yaw = yaw
         player.pitch = pitch
         player.headYaw = yaw
         player.bodyYaw = yaw
-        player.prevYaw = yaw
-        player.prevPitch = pitch
-        player.prevHeadYaw = yaw
-        player.prevBodyYaw = yaw
+        player.prevYaw = pYaw
+        player.prevPitch = pPitch
+        player.prevHeadYaw = pYaw
+        player.prevBodyYaw = pYaw
 
         val acc = player as dev.replaycraft.mcap.mixin.EntityPrevAnglesAccessor
-        acc.mcap_setPrevYaw(yaw)
-        acc.mcap_setPrevPitch(pitch)
+        acc.mcap_setPrevYaw(pYaw)
+        acc.mcap_setPrevPitch(pPitch)
 
         val cameraEntity = client.cameraEntity
         if (cameraEntity != null && cameraEntity == player) {
             cameraEntity.yaw = yaw
             cameraEntity.pitch = pitch
-            cameraEntity.prevYaw = yaw
-            cameraEntity.prevPitch = pitch
+            cameraEntity.prevYaw = pYaw
+            cameraEntity.prevPitch = pPitch
         }
 
         if (hotbar in 0..8) {
@@ -481,6 +512,13 @@ class ReplayHandler {
         if (armSwinging && !player.handSwinging) {
             player.swingHand(net.minecraft.util.Hand.MAIN_HAND)
         }
+
+        // Store this tick's values as "previous" for next tick's interpolation
+        prevTickX = xd
+        prevTickY = yd
+        prevTickZ = zd
+        prevTickYaw = yaw
+        prevTickPitch = pitch
     }
 
     fun nextSession() {

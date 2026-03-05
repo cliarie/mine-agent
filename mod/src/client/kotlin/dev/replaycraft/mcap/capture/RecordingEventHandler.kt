@@ -8,6 +8,7 @@ import net.minecraft.network.NetworkState
 import net.minecraft.network.PacketByteBuf
 import net.minecraft.network.packet.Packet
 import net.minecraft.network.packet.s2c.play.*
+import net.minecraft.util.math.BlockPos
 
 /**
  * Injects synthetic S2C packets for the local player's state each tick.
@@ -22,6 +23,7 @@ import net.minecraft.network.packet.s2c.play.*
  * - EntitySetHeadYawS2CPacket (head rotation)
  * - EntityEquipmentUpdateS2CPacket (held items, armor)
  * - EntityAnimationS2CPacket (arm swing)
+ * - BlockBreakingProgressS2CPacket (block breaking animation, via WorldRendererMixin)
  *
  * These are serialized and fed into RawPacketCapture as if the server sent them.
  */
@@ -153,11 +155,33 @@ object RecordingEventHandler {
     }
 
     /**
-     * Inject a synthetic packet into the RawPacketCapture queue.
-     * We use the packet instance to look up its ID, then store the
-     * raw data bytes from the buffer.
+     * Called from WorldRendererMixin when a block breaking progress event occurs.
+     * Mirrors ReplayMod's RecordingEventHandler.onBlockBreakAnim().
+     *
+     * The server only sends BlockBreakingProgressS2CPacket to OTHER clients,
+     * not to the player doing the breaking. We inject a synthetic packet so
+     * that the block breaking animation is visible during replay.
      */
-    private fun injectPacket(packet: Packet<*>, buf: PacketByteBuf) {
+    fun onBlockBreakAnim(breakerId: Int, pos: BlockPos, progress: Int) {
+        if (!RawPacketCapture.isCapturing()) return
+
+        val client = MinecraftClient.getInstance()
+        val player = client.player ?: return
+
+        // Only capture our own block breaking (like ReplayMod)
+        if (breakerId != player.id) return
+
+        try {
+            val packet = BlockBreakingProgressS2CPacket(breakerId, pos, progress)
+            injectPacket(packet)
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Inject a synthetic packet into the RawPacketCapture queue.
+     * Serializes the packet to bytes and stores it with the current tick/timestamp.
+     */
+    private fun injectPacket(packet: Packet<*>, buf: PacketByteBuf? = null) {
         try {
             val state = NetworkState.PLAY
             val packetId = state.getPacketId(NetworkSide.CLIENTBOUND, packet)
