@@ -55,6 +55,13 @@ dependencies {
     modImplementation("net.fabricmc.fabric-api:fabric-api:$fabricVersion")
 
     modImplementation("net.fabricmc:fabric-language-kotlin:$fabricKotlinVersion")
+
+    // Arrow IPC for ML pipeline (tick-level game state export)
+    implementation("org.apache.arrow:arrow-vector:14.0.1") {
+        exclude(group = "io.netty") // Minecraft already bundles Netty
+        exclude(group = "com.fasterxml.jackson.core") // Minecraft bundles Jackson
+    }
+    implementation("org.apache.arrow:arrow-memory-unsafe:14.0.1")
 }
 
 java {
