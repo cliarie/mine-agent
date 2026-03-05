@@ -140,6 +140,7 @@ class ReplayHandler {
                 t.printStackTrace()
             }
         }
+        fakeConnection = networkManager
 
         // Set up the initial packet listener (login handler, will be replaced by GameJoin)
         // MC 1.20.1 signature: (ClientConnection, MinecraftClient, ServerInfo?, Screen?, boolean, Duration, Consumer<Text>)
@@ -257,9 +258,9 @@ class ReplayHandler {
     fun stepOneTick(client: MinecraftClient) {
         if (!isActive || !worldLoaded) return
         if (isPlaying) return
+        if (tick >= maxTick) return // Already at end, don't re-dispatch
         dispatchTickPackets(client)
         tick++
-        if (tick > maxTick) tick = maxTick
     }
 
     /**
@@ -277,10 +278,8 @@ class ReplayHandler {
         dispatchTickPackets(client)
 
         tick++
-        if (tick > maxTick) {
-            println("[MCAP] Replay finished, looping from tick $maxTick back to 0")
-            // For now, just pause at the end instead of looping
-            // (looping would require re-sending GameJoinS2CPacket)
+        if (tick >= maxTick) {
+            println("[MCAP] Replay finished at tick $maxTick")
             isPlaying = false
             tick = maxTick
         }
