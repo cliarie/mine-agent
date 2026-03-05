@@ -27,7 +27,7 @@ The mod JAR is output to `build/libs/`. Install it in your Minecraft `mods/` fol
 
 | File | Description |
 |------|-------------|
-| `ReplayController.kt` | Reads tick records + packets, dispatches through `ClientPlayNetworkHandler` |
+| `ReplayController.kt` | Reads tick records and applies position/rotation/hotbar during replay |
 | `ReplayState.kt` | Global replay state flag (prevents capture during replay) |
 
 ### Video
@@ -66,17 +66,22 @@ The mod JAR is output to `build/libs/`. Install it in your Minecraft `mods/` fol
 
 ## How Replay Works
 
-1. `ReplayController.applyRecordedTick()` reads a 48-byte tick record and sets:
-   - Player position (with full prev/render position sync)
-   - Camera angles (yaw, pitch, head yaw, body yaw)
-   - Hotbar slot, arm swing animation
+`ReplayController.applyRecordedTick()` reads a 48-byte tick record and sets:
+- Player position (with full prev/render position sync)
+- Camera angles (yaw, pitch, head yaw, body yaw)
+- Hotbar slot, arm swing animation
 
-2. `ReplayController.applyPacketsForTick()` reads all raw packets for the current tick and:
-   - Constructs `Packet<?>` objects via `NetworkState.PLAY.getPacketHandler()`
-   - Filters out problematic packets (disconnect, keep alive, position look, game join)
-   - Dispatches remaining packets through `packet.apply(handler)` on the `ClientPlayNetworkHandler`
+The replay runs at END_CLIENT_TICK, after the normal player tick completes. This ensures
+the integrated server stays connected (canceling the player tick causes disconnection).
+The player's position is overridden every tick to follow the recording.
 
-This means **all UI screens work automatically** -- inventory, crafting tables, chests, furnaces, enchanting tables, anvils, brewing stands, beacons, merchants, hoppers, shulker boxes, and creative inventory all open/close and update correctly during replay, because the same packet handling code processes them as during live play.
+**Current scope:** Live in-game replay shows position, rotation, hotbar, and arm swing.
+Raw S2C packet data is captured and stored but not dispatched during live replay because
+packets from a previous session reference entity IDs and world state that don't exist
+in the current game, causing corruption/disconnection. Full packet-based UI replay
+(inventory, chests, crafting, etc.) requires a fake server connection (future work,
+similar to ReplayMod's `ReplayHandler` architecture). Packet data is accessible via
+`export_json` and the simulator for offline analysis.
 
 ## Keybindings
 

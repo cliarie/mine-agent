@@ -80,22 +80,14 @@ class CaptureWriter(
     
     /**
      * Flush all pending data to disk by closing and reopening the session.
-     * This blocks until the flush is complete.
+     * This is non-blocking to avoid freezing the main game thread (which would
+     * cause the integrated server to disconnect the player in singleplayer).
      */
     fun flush() {
         if (!running) return
-        synchronized(flushLock) {
-            flushComplete = false
-            flushRequested = true
-            // Wait for flush to complete (max 2 seconds)
-            val startTime = System.currentTimeMillis()
-            while (!flushComplete && System.currentTimeMillis() - startTime < 2000) {
-                try {
-                    flushLock.wait(100)
-                } catch (_: InterruptedException) {
-                    break
-                }
-            }
-        }
+        flushRequested = true
+        // Non-blocking: the writer thread will process the flush asynchronously.
+        // Previous implementation blocked up to 2 seconds, which could cause
+        // the integrated server to time out and disconnect the player.
     }
 }
