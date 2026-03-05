@@ -5,6 +5,7 @@ import dev.replaycraft.mcap.native.NativeBridge
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelOutboundHandlerAdapter
 import io.netty.channel.ChannelPromise
+import io.netty.util.ReferenceCountUtil
 import io.netty.channel.embedded.EmbeddedChannel
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.network.ClientLoginNetworkHandler
@@ -485,6 +486,8 @@ class ReplayHandler {
     private class DropOutboundMessagesHandler : ChannelOutboundHandlerAdapter() {
         override fun write(ctx: ChannelHandlerContext, msg: Any, promise: ChannelPromise) {
             // Drop all outgoing messages - there is no server
+            // Release ref-counted ByteBuf to prevent leaks (matching ReplayMod)
+            ReferenceCountUtil.release(msg)
             promise.setSuccess()
         }
 

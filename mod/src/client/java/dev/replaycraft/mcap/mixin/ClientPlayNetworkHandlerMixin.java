@@ -20,6 +20,11 @@ public class ClientPlayNetworkHandlerMixin {
 
     @Inject(method = "onGameJoin", at = @At("HEAD"))
     private void mcap_onGameJoin(GameJoinS2CPacket packet, CallbackInfo ci) {
+        // Don't interfere with capture system during replay - would corrupt active capture
+        // session by resetting timing, writing replay packets as new data, and installing
+        // pipeline handler on the fake EmbeddedChannel
+        if (dev.replaycraft.mcap.replay.ReplayState.isReplayActive()) return;
+
         PacketCapture.onGameJoin();
         RawPacketCapture.INSTANCE.onGameJoin();
 

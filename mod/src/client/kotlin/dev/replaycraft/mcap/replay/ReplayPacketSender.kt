@@ -122,10 +122,10 @@ class ReplayPacketSender(
             val packetData = ByteArray(dataLen)
             buf.get(packetData)
 
+            val rawBuf = Unpooled.buffer()
             try {
                 // Reconstruct raw MC wire format: varint(packetId) + data
                 // This is what the DecoderHandler expects
-                val rawBuf = Unpooled.buffer()
                 writeVarInt(rawBuf, packetId)
                 rawBuf.writeBytes(packetData)
 
@@ -134,7 +134,8 @@ class ReplayPacketSender(
                 pipeline.fireChannelRead(rawBuf)
                 count++
             } catch (e: Exception) {
-                // Skip packets that fail - expected for some edge cases
+                // Release ByteBuf on error to prevent leak
+                rawBuf.release()
             }
         }
 
