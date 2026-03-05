@@ -3,11 +3,13 @@ package dev.replaycraft.mcap.capture
 import io.netty.buffer.Unpooled
 import net.minecraft.client.MinecraftClient
 import net.minecraft.entity.EquipmentSlot
+import net.minecraft.item.ItemStack
 import net.minecraft.network.NetworkSide
 import net.minecraft.network.NetworkState
 import net.minecraft.network.PacketByteBuf
 import net.minecraft.network.packet.Packet
 import net.minecraft.network.packet.s2c.play.*
+import net.minecraft.util.Hand
 import net.minecraft.util.math.BlockPos
 
 /**
@@ -22,7 +24,9 @@ import net.minecraft.util.math.BlockPos
  * - EntityVelocityUpdateS2CPacket (player velocity)
  * - EntitySetHeadYawS2CPacket (head rotation)
  * - EntityEquipmentUpdateS2CPacket (held items, armor)
- * - EntityAnimationS2CPacket (arm swing)
+ * - EntityAnimationS2CPacket (arm swing, sleep wake)
+ * - EntityAttachS2CPacket (vehicle mount/dismount)
+ * - WorldEventS2CPacket (client-side effects like block break sounds)
  * - BlockBreakingProgressS2CPacket (block breaking animation, via WorldRendererMixin)
  *
  * These are serialized and fed into RawPacketCapture as if the server sent them.
@@ -34,7 +38,11 @@ object RecordingEventHandler {
     private var lastZ = Double.NaN
     private var lastYaw = Float.NaN
     private var lastPitch = Float.NaN
-    private var wasSwinging = false
+    private var lastRotationYawHead: Int? = null
+    private var lastRiding = -1
+    private var wasSleeping = false
+    private var ticksSinceLastCorrection = 0
+    private val playerItems = Array<ItemStack>(EquipmentSlot.values().size) { ItemStack.EMPTY }
 
     fun reset() {
         lastX = Double.NaN
@@ -42,7 +50,11 @@ object RecordingEventHandler {
         lastZ = Double.NaN
         lastYaw = Float.NaN
         lastPitch = Float.NaN
-        wasSwinging = false
+        lastRotationYawHead = null
+        lastRiding = -1
+        wasSleeping = false
+        ticksSinceLastCorrection = 0
+        playerItems.fill(ItemStack.EMPTY)
     }
 
     /**
@@ -54,39 +66,66 @@ object RecordingEventHandler {
         val client = MinecraftClient.getInstance()
         val player = client.player ?: return
 
-        // --- Position packet (only if moved) ---
+        // --- Position packet (matching ReplayMod's logic) ---
         val x = player.x
         val y = player.y
         val z = player.z
-        val yaw = player.yaw
-        val pitch = player.pitch
 
-        val moved = lastX.isNaN() ||
-            (x - lastX) * (x - lastX) + (y - lastY) * (y - lastY) + (z - lastZ) * (z - lastZ) > 0.0001 ||
-            yaw != lastYaw || pitch != lastPitch
+        var force = false
+        if (lastX.isNaN() || lastY.isNaN() || lastZ.isNaN()) {
+            force = true
+            lastX = x
+            lastY = y
+            lastZ = z
+        }
 
-        if (moved) {
-            try {
+        ticksSinceLastCorrection++
+        if (ticksSinceLastCorrection >= 100) {
+            ticksSinceLastCorrection = 0
+            force = true
+        }
+
+        val dx = x - lastX
+        val dy = y - lastY
+        val dz = z - lastZ
+
+        lastX = x
+        lastY = y
+        lastZ = z
+
+        // ReplayMod uses 8.0 as max relative distance threshold
+        val maxRelDist = 8.0
+
+        try {
+            if (force || Math.abs(dx) > maxRelDist || Math.abs(dy) > maxRelDist || Math.abs(dz) > maxRelDist) {
+                // Absolute teleport packet
                 val posBuf = PacketByteBuf(Unpooled.buffer())
                 posBuf.writeVarInt(player.id)
                 posBuf.writeDouble(x)
                 posBuf.writeDouble(y)
                 posBuf.writeDouble(z)
-                posBuf.writeByte((yaw * 256.0f / 360.0f).toInt())
-                posBuf.writeByte((pitch * 256.0f / 360.0f).toInt())
+                posBuf.writeByte((player.yaw * 256.0f / 360.0f).toInt())
+                posBuf.writeByte((player.pitch * 256.0f / 360.0f).toInt())
                 posBuf.writeBoolean(player.isOnGround)
-                // Construct the actual packet to get its ID
                 val posPacket = EntityPositionS2CPacket(posBuf)
                 injectPacket(posPacket, posBuf)
                 posBuf.release()
-            } catch (_: Exception) {}
-
-            lastX = x
-            lastY = y
-            lastZ = z
-            lastYaw = yaw
-            lastPitch = pitch
-        }
+            } else {
+                // Relative movement + rotation packet (matches ReplayMod)
+                val newYaw = (player.yaw * 256.0f / 360.0f).toInt().toByte()
+                val newPitch = (player.pitch * 256.0f / 360.0f).toInt().toByte()
+                val packet = EntityS2CPacket.RotateAndMoveRelative(
+                    player.id,
+                    Math.round(dx * 4096).toShort(),
+                    Math.round(dy * 4096).toShort(),
+                    Math.round(dz * 4096).toShort(),
+                    newYaw,
+                    newPitch,
+                    player.isOnGround
+                )
+                injectPacket(packet)
+            }
+        } catch (_: Exception) {}
 
         // --- Velocity packet ---
         val vel = player.velocity
@@ -103,55 +142,74 @@ object RecordingEventHandler {
             } catch (_: Exception) {}
         }
 
-        // --- Head yaw ---
-        try {
-            val headBuf = PacketByteBuf(Unpooled.buffer())
-            headBuf.writeVarInt(player.id)
-            headBuf.writeByte((player.headYaw * 256.0f / 360.0f).toInt())
-            val headPacket = EntitySetHeadYawS2CPacket(headBuf)
-            injectPacket(headPacket, headBuf)
-            headBuf.release()
-        } catch (_: Exception) {}
-
-        // --- Equipment (every 20 ticks = 1 second) ---
-        if (RawPacketCapture.currentTick % 20 == 0) {
+        // --- Head yaw (only if changed, like ReplayMod) ---
+        val rotationYawHead = (player.headYaw * 256.0f / 360.0f).toInt()
+        if (rotationYawHead != lastRotationYawHead) {
             try {
-                val equipBuf = PacketByteBuf(Unpooled.buffer())
-                equipBuf.writeVarInt(player.id)
-                val slots = listOf(
-                    EquipmentSlot.MAINHAND, EquipmentSlot.OFFHAND,
-                    EquipmentSlot.HEAD, EquipmentSlot.CHEST,
-                    EquipmentSlot.LEGS, EquipmentSlot.FEET
-                )
-                for ((idx, slot) in slots.withIndex()) {
-                    val stack = player.getEquippedStack(slot)
-                    val slotId = if (idx < slots.size - 1) {
-                        slot.ordinal or 0x80
-                    } else {
-                        slot.ordinal
-                    }
-                    equipBuf.writeByte(slotId)
-                    equipBuf.writeItemStack(stack)
-                }
-                val equipPacket = EntityEquipmentUpdateS2CPacket(equipBuf)
-                injectPacket(equipPacket, equipBuf)
-                equipBuf.release()
+                val headBuf = PacketByteBuf(Unpooled.buffer())
+                headBuf.writeVarInt(player.id)
+                headBuf.writeByte(rotationYawHead)
+                val headPacket = EntitySetHeadYawS2CPacket(headBuf)
+                injectPacket(headPacket, headBuf)
+                headBuf.release()
             } catch (_: Exception) {}
+            lastRotationYawHead = rotationYawHead
         }
 
-        // --- Arm swing animation ---
-        val swinging = player.handSwinging
-        if (swinging && !wasSwinging) {
+        // --- Equipment (on change, matching ReplayMod) ---
+        for (slot in EquipmentSlot.values()) {
+            val stack = player.getEquippedStack(slot)
+            val index = slot.ordinal
+            if (!ItemStack.areEqual(playerItems[index], stack)) {
+                val stackCopy = if (stack.isEmpty) ItemStack.EMPTY else stack.copy()
+                playerItems[index] = stackCopy
+                try {
+                    injectPacket(EntityEquipmentUpdateS2CPacket(
+                        player.id,
+                        listOf(com.mojang.datafixers.util.Pair(slot, stackCopy))
+                    ))
+                } catch (_: Exception) {}
+            }
+        }
+
+        // --- Arm swing animation (matching ReplayMod: check handSwingTicks == 0) ---
+        if (player.handSwinging && player.handSwingTicks == 0) {
             try {
                 val animBuf = PacketByteBuf(Unpooled.buffer())
                 animBuf.writeVarInt(player.id)
-                animBuf.writeByte(0) // 0 = swing main hand
+                val animType = if (player.preferredHand == Hand.MAIN_HAND) 0 else 3
+                animBuf.writeByte(animType)
                 val animPacket = EntityAnimationS2CPacket(animBuf)
                 injectPacket(animPacket, animBuf)
                 animBuf.release()
             } catch (_: Exception) {}
         }
-        wasSwinging = swinging
+
+        // --- Vehicle mount/dismount (matching ReplayMod) ---
+        val vehicle = player.vehicle
+        val vehicleId = vehicle?.id ?: -1
+        if (lastRiding != vehicleId) {
+            lastRiding = vehicleId
+            try {
+                injectPacket(EntityAttachS2CPacket(player, vehicle))
+            } catch (_: Exception) {}
+        }
+
+        // --- Sleep wake animation (matching ReplayMod) ---
+        if (!player.isSleeping && wasSleeping) {
+            try {
+                val animBuf = PacketByteBuf(Unpooled.buffer())
+                animBuf.writeVarInt(player.id)
+                animBuf.writeByte(2) // 2 = leave bed animation
+                val animPacket = EntityAnimationS2CPacket(animBuf)
+                injectPacket(animPacket, animBuf)
+                animBuf.release()
+            } catch (_: Exception) {}
+            wasSleeping = false
+        }
+        if (player.isSleeping) {
+            wasSleeping = true
+        }
     }
 
     /**

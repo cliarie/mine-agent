@@ -10,6 +10,7 @@
     "ClientPlayNetworkHandlerMixin",
     "ClientPlayerEntityMixin",
     "ClientPlayerInteractionManagerMixin",
+    "MouseMixin",
     "PacketCaptureMixin",
     "PlayerEntityMixin",
     "TitleScreenMixin",

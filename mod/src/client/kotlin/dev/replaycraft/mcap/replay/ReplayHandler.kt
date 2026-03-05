@@ -9,6 +9,7 @@ import io.netty.channel.ChannelPromise
 import io.netty.util.ReferenceCountUtil
 import io.netty.channel.embedded.EmbeddedChannel
 import net.minecraft.client.MinecraftClient
+import net.minecraft.client.gui.screen.DownloadingTerrainScreen
 import net.minecraft.client.network.ClientLoginNetworkHandler
 import net.minecraft.network.ClientConnection
 import net.minecraft.network.DecoderHandler
@@ -71,6 +72,12 @@ class ReplayHandler {
 
     // Track whether the initial world has been set up via GameJoinS2CPacket
     private var worldLoaded: Boolean = false
+
+    // Track GUI readiness: don't auto-play until the DownloadingTerrainScreen is gone
+    // and the world is visually rendered. Like ReplayMod's hasWorldLoaded flag.
+    private var guiReady: Boolean = false
+    private var guiWaitTicks: Int = 0
+    private val MAX_GUI_WAIT_TICKS = 100 // 5 seconds max wait
 
 
     /**
@@ -229,6 +236,8 @@ class ReplayHandler {
         isPlaying = false
         tick = 0
         worldLoaded = false
+        guiReady = false
+        guiWaitTicks = 0
 
         // Reset interpolation state for fresh session
         prevTickX = Double.NaN
@@ -315,14 +324,30 @@ class ReplayHandler {
 
         worldLoaded = true
         tick = setupEnd + 1 // Start playback after setup ticks (avoids re-dispatching last setup tick)
+
+        // Close DownloadingTerrainScreen manually (matching ReplayMod lines 869-873).
+        // MC shows this screen after GameJoinS2CPacket until PlayerPositionLookS2CPacket
+        // arrives and the world finishes loading. In replay, we need to close it manually.
+        val mc = MinecraftClient.getInstance()
+        val currentScreen = mc.currentScreen
+        if (currentScreen is DownloadingTerrainScreen) {
+            mc.setScreen(null)
+            println("[MCAP] Closed DownloadingTerrainScreen manually")
+        }
+
         if (tick >= maxTick) {
             // Short session: all ticks already dispatched during setup
             tick = maxTick
             isPlaying = false
+            guiReady = true
             println("[MCAP] World setup complete, short session fully dispatched (tick $tick)")
         } else {
-            isPlaying = true // Auto-play immediately after world setup
-            println("[MCAP] World setup complete, auto-playing from tick $tick")
+            // Don't auto-play yet - wait for GUI to fully render.
+            // The terrain needs a few frames to actually appear on screen.
+            isPlaying = false
+            guiReady = false
+            guiWaitTicks = 0
+            println("[MCAP] World setup complete, waiting for GUI to render before auto-play...")
         }
     }
 
@@ -348,6 +373,7 @@ class ReplayHandler {
         ReplayState.setReplayActive(false)
         isPlaying = false
         worldLoaded = false
+        guiReady = false
 
         // Clear the bridge reference so McapReplayClient stops checking this handler
         McapReplayClientBridge.clearActiveReplay()
@@ -378,6 +404,36 @@ class ReplayHandler {
      */
     fun onClientTick(client: MinecraftClient) {
         if (!isActive || !worldLoaded) return
+
+        // Wait for GUI to be ready before starting auto-play.
+        // This ensures the terrain is visually rendered before playback begins,
+        // not just loaded in the terminal. Matching ReplayMod's approach of
+        // waiting for DownloadingTerrainScreen to close + a few render frames.
+        if (!guiReady) {
+            guiWaitTicks++
+            val screen = client.currentScreen
+
+            // Close DownloadingTerrainScreen if still showing
+            if (screen is DownloadingTerrainScreen) {
+                client.setScreen(null)
+                println("[MCAP] Closed lingering DownloadingTerrainScreen")
+            }
+
+            // Wait until: no blocking screen + world exists + waited at least 10 ticks (0.5s)
+            // for the renderer to catch up, OR timeout after MAX_GUI_WAIT_TICKS
+            val noBlockingScreen = client.currentScreen == null
+            val worldExists = client.world != null && client.player != null
+            val rendererReady = guiWaitTicks >= 10
+            val timedOut = guiWaitTicks >= MAX_GUI_WAIT_TICKS
+
+            if ((noBlockingScreen && worldExists && rendererReady) || timedOut) {
+                guiReady = true
+                isPlaying = true
+                println("[MCAP] GUI ready after $guiWaitTicks ticks, auto-playing from tick $tick")
+            }
+            return
+        }
+
         if (!isPlaying) return
 
         if (tick % 100 == 0) {

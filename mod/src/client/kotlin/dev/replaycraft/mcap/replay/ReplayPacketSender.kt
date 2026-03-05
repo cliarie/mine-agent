@@ -6,6 +6,7 @@ import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandler.Sharable
 import io.netty.channel.ChannelHandlerContext
 import io.netty.channel.ChannelInboundHandlerAdapter
+import net.minecraft.client.MinecraftClient
 import net.minecraft.network.NetworkSide
 import net.minecraft.network.NetworkState
 import net.minecraft.network.PacketByteBuf
@@ -88,6 +89,9 @@ class ReplayPacketSender(
      * Process decoded packets flowing through the pipeline.
      * The DecoderHandler upstream has already converted raw ByteBuf -> Packet<?>.
      * We filter out BAD_PACKETS and pass the rest downstream to ClientConnection.
+     *
+     * Also forces immediate light updates after ChunkDataS2CPacket to speed up
+     * terrain loading (matching ReplayMod's FullReplaySender lines 462-488).
      */
     override fun channelRead(ctx: ChannelHandlerContext, msg: Any) {
         if (msg is Packet<*>) {
@@ -97,6 +101,36 @@ class ReplayPacketSender(
         }
         // Pass to next handler (ClientConnection / packet_handler)
         super.channelRead(ctx, msg)
+
+        // Force immediate light updates after chunk data packets.
+        // Without this, terrain takes a very long time to load because MC
+        // normally spreads light updates across multiple ticks. ReplayMod
+        // forces them all at once for instant terrain rendering.
+        if (msg is ChunkDataS2CPacket) {
+            forceLightUpdates()
+        }
+    }
+
+    /**
+     * Force all pending light updates to complete immediately.
+     * Matching ReplayMod's FullReplaySender: after ChunkDataS2CPacket,
+     * drain the LightingProvider's update queue so terrain is lit instantly
+     * instead of gradually over many ticks.
+     */
+    private fun forceLightUpdates() {
+        val mc = MinecraftClient.getInstance()
+        val doLightUpdates = Runnable {
+            val world = mc.world ?: return@Runnable
+            val provider = world.chunkManager.lightingProvider
+            while (provider.hasUpdates()) {
+                provider.doLightUpdates()
+            }
+        }
+        if (mc.isOnThread) {
+            doLightUpdates.run()
+        } else {
+            mc.send(doLightUpdates)
+        }
     }
 
     /**
