@@ -254,6 +254,10 @@ class ReplayHandler {
         prevTickPitch = Float.NaN
         accumulatedYaw = Float.NaN
         prevScreenType = 0
+        prevCursorX = Double.NaN
+        prevCursorY = Double.NaN
+        cursorX = Double.NaN
+        cursorY = Double.NaN
 
         println("[MCAP] Fake connection established with full ReplayMod pipeline for: $sessionName")
 
@@ -536,6 +540,14 @@ class ReplayHandler {
     // Track previous screen type for detecting open/close transitions
     private var prevScreenType: Int = 0
 
+    // Track cursor position for smooth replay in inventory screens.
+    // Stored as scaled screen coordinates (i16) in tick record bytes 44-47.
+    // We interpolate between prev and current for smooth cursor movement at >20Hz.
+    private var prevCursorX: Double = Double.NaN
+    private var prevCursorY: Double = Double.NaN
+    private var cursorX: Double = Double.NaN
+    private var cursorY: Double = Double.NaN
+
     /**
      * Apply the 48-byte tick record for position, rotation, hotbar.
      *
@@ -661,7 +673,6 @@ class ReplayHandler {
 
         // --- Screen open/close from tick record ---
         // Read remaining bytes to get to screenType at byte 29
-        // buf position after reading x,y,z is at byte 24
         // health (24-27), food (28), screenType (29)
         if (record.size >= 30) {
             val screenBuf = java.nio.ByteBuffer.wrap(record).order(java.nio.ByteOrder.LITTLE_ENDIAN)
@@ -673,12 +684,53 @@ class ReplayHandler {
             }
         }
 
+        // --- Cursor position from tick record (bytes 44-47) ---
+        // Read the recorded cursor position and set it via GLFW so inventory
+        // screens show the correct hover/highlight during replay.
+        if (record.size >= 48) {
+            val cursorBuf = java.nio.ByteBuffer.wrap(record).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+            val rawCursorX = cursorBuf.getShort(44).toDouble()
+            val rawCursorY = cursorBuf.getShort(46).toDouble()
+
+            // Shift previous → prev, current → cursor for interpolation
+            prevCursorX = if (cursorX.isNaN()) rawCursorX else cursorX
+            prevCursorY = if (cursorY.isNaN()) rawCursorY else cursorY
+            cursorX = rawCursorX
+            cursorY = rawCursorY
+
+            // Apply immediately (screens read mouse position each frame)
+            applyCursorPosition(client)
+        }
+
         // Store this tick's values as "previous" for next tick's interpolation
         prevTickX = xd
         prevTickY = yd
         prevTickZ = zd
         prevTickYaw = yaw
         prevTickPitch = pitch
+    }
+
+    /**
+     * Apply the recorded cursor position to the GLFW window.
+     * Called each tick during replay when a screen is open.
+     *
+     * The tick record stores cursor position as scaled screen coordinates
+     * (divided by window.scaleFactor during recording). We multiply back
+     * by scaleFactor to get raw pixel coordinates for GLFW.
+     */
+    private fun applyCursorPosition(client: MinecraftClient) {
+        // Only move cursor when a screen is open (inventory, chest, crafting, etc.)
+        if (client.currentScreen == null) return
+        if (cursorX.isNaN() || cursorY.isNaN()) return
+
+        try {
+            val scale = client.window.scaleFactor
+            val rawX = cursorX * scale
+            val rawY = cursorY * scale
+            org.lwjgl.glfw.GLFW.glfwSetCursorPos(client.window.handle, rawX, rawY)
+        } catch (_: Exception) {
+            // Ignore GLFW errors
+        }
     }
 
     /**

@@ -1,6 +1,7 @@
 package dev.replaycraft.mcap.mixin;
 
 import dev.replaycraft.mcap.capture.RecordingEventHandler;
+import dev.replaycraft.mcap.replay.ReplayState;
 import net.minecraft.client.render.WorldRenderer;
 import net.minecraft.util.math.BlockPos;
 import org.spongepowered.asm.mixin.Mixin;
@@ -24,6 +25,9 @@ public class WorldRendererMixin {
 
     @Inject(method = "setBlockBreakingInfo", at = @At("HEAD"))
     private void mcap_onBlockBreakingInfo(int entityId, BlockPos pos, int progress, CallbackInfo ci) {
+        // Don't re-capture during replay — the packet is already in the capture data
+        // and re-injecting would corrupt the recording if one were active
+        if (ReplayState.isReplayActive()) return;
         RecordingEventHandler.INSTANCE.onBlockBreakAnim(entityId, pos, progress);
     }
 }

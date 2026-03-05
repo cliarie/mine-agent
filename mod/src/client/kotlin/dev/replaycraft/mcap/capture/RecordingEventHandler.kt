@@ -464,6 +464,48 @@ object RecordingEventHandler {
     }
 
     /**
+     * Called from WorldMixin when syncWorldEvent is fired for the local player.
+     * Mirrors ReplayMod's MixinWorldClient.replayModRecording_syncWorldEvent().
+     *
+     * The server sends WorldEventS2CPacket to OTHER players, not the one causing
+     * the event. We inject a synthetic packet so the replay includes block break
+     * particles (event 2001), door sounds, and other client-side world effects.
+     */
+    fun onClientWorldEvent(eventId: Int, pos: BlockPos, data: Int) {
+        if (!RawPacketCapture.isCapturing()) return
+
+        try {
+            val packet = WorldEventS2CPacket(eventId, pos, data, false)
+            injectPacket(packet)
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Called from WorldMixin when playSound is fired for the local player.
+     * Mirrors ReplayMod's MixinWorldClient.replayModRecording_playSound().
+     *
+     * The server sends PlaySoundS2CPacket to OTHER players, not the one causing
+     * the sound. We inject a synthetic packet so the replay includes block break
+     * sounds, placement sounds, and other player-initiated sounds.
+     */
+    fun onClientSound(
+        sound: net.minecraft.sound.SoundEvent,
+        category: net.minecraft.sound.SoundCategory,
+        x: Double, y: Double, z: Double,
+        volume: Float, pitch: Float
+    ) {
+        if (!RawPacketCapture.isCapturing()) return
+
+        try {
+            val packet = PlaySoundS2CPacket(
+                net.minecraft.registry.Registries.SOUND_EVENT.getEntry(sound),
+                category, x, y, z, volume, pitch, 0L  // seed=0
+            )
+            injectPacket(packet)
+        } catch (_: Exception) {}
+    }
+
+    /**
      * Called from WorldRendererMixin when a block breaking progress event occurs.
      * Mirrors ReplayMod's RecordingEventHandler.onBlockBreakAnim().
      *
