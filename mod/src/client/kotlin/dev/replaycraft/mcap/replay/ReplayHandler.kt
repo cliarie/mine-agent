@@ -427,6 +427,11 @@ class ReplayHandler {
 
         // Re-open the same session (creates fresh connection + initial packets)
         openSelectedSession()
+        // If openSelectedSession() failed, stop to avoid broken state
+        if (replayHandle < 0) {
+            stop()
+            return
+        }
     }
 
     fun stepOneTick(client: MinecraftClient) {
