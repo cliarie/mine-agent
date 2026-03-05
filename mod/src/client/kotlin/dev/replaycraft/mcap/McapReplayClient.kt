@@ -112,8 +112,8 @@ object McapReplayClient : ClientModInitializer {
                 }
                 lastNextKeyState = nextKeyDown
 
-                // Exit replay (R key) - return to title screen
-                val exitKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_R) == GLFW.GLFW_PRESS
+                // Exit replay (Escape key) - return to title screen
+                val exitKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_ESCAPE) == GLFW.GLFW_PRESS
                 if (exitKeyDown && !lastExitKeyState && client.currentScreen == null) {
                     lastExitKeyState = exitKeyDown
                     replay.stop()

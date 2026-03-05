@@ -63,25 +63,26 @@ class ReplayPacketSender(
             SetCameraEntityS2CPacket::class.java,
             // Title packets can be distracting during replay
             TitleS2CPacket::class.java,
-            // These UI/stat packets are noise during replay
-            HealthUpdateS2CPacket::class.java,
-            OpenHorseScreenS2CPacket::class.java,
-            CloseScreenS2CPacket::class.java,
-            ScreenHandlerSlotUpdateS2CPacket::class.java,
-            ScreenHandlerPropertyUpdateS2CPacket::class.java,
-            SignEditorOpenS2CPacket::class.java,
+            // Stats/XP noise during replay
             StatisticsS2CPacket::class.java,
             ExperienceBarUpdateS2CPacket::class.java,
-            // Note: PlayerAbilitiesS2CPacket is NOT blocked - it must be replayed
-            // so the player gets correct game mode and flying state from the capture.
             // Recipes/advancements cause UI noise
             SynchronizeRecipesS2CPacket::class.java,
             AdvancementUpdateS2CPacket::class.java,
             SelectAdvancementTabS2CPacket::class.java,
             // Written book screen
             OpenWrittenBookS2CPacket::class.java,
-            // Open screen (container GUIs) - skip to avoid phantom screens
-            OpenScreenS2CPacket::class.java,
+            // Sign editor - not useful during replay
+            SignEditorOpenS2CPacket::class.java,
+            // Note: The following are NOT blocked (unlike ReplayMod) because the user
+            // wants inventory, crafting, chests, and all UIs to be captured and replayed:
+            // - OpenScreenS2CPacket (opens container GUIs: chests, crafting, furnaces)
+            // - CloseScreenS2CPacket (closes container GUIs)
+            // - ScreenHandlerSlotUpdateS2CPacket (updates slot contents)
+            // - ScreenHandlerPropertyUpdateS2CPacket (furnace progress, etc.)
+            // - HealthUpdateS2CPacket (health/food display)
+            // - OpenHorseScreenS2CPacket (horse inventory)
+            // - PlayerAbilitiesS2CPacket (game mode/flying state)
         )
     }
 

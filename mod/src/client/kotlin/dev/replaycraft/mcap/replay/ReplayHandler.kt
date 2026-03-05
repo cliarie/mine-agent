@@ -646,7 +646,7 @@ class ReplayHandler {
         val worldStatus = if (worldLoaded) "World loaded" else "Loading..."
         ctx.drawText(MinecraftClient.getInstance().textRenderer, worldStatus, 8, 32, 0xAAAAAA, true)
 
-        val controls = "G=Play/Pause  .=Step  [/]=Prev/Next  R=Exit  V=Video"
+        val controls = "G=Play/Pause  .=Step  [/]=Prev/Next  Esc=Exit  V=Video"
         ctx.drawText(MinecraftClient.getInstance().textRenderer, controls, 8, 44, 0xAAAAAA, true)
     }
 

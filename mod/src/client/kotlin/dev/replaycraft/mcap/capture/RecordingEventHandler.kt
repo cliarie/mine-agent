@@ -176,15 +176,13 @@ object RecordingEventHandler {
         }
 
         // --- Arm swing animation (matching ReplayMod: check handSwingTicks == 0) ---
+        // Use the Entity constructor like ReplayMod does: EntityAnimationS2CPacket(player, animId)
+        // 0 = SWING_MAIN_HAND, 3 = SWING_OFF_HAND
         if (player.handSwinging && player.handSwingTicks == 0) {
             try {
-                val animBuf = PacketByteBuf(Unpooled.buffer())
-                animBuf.writeVarInt(player.id)
                 val animType = if (player.preferredHand == Hand.MAIN_HAND) 0 else 3
-                animBuf.writeByte(animType)
-                val animPacket = EntityAnimationS2CPacket(animBuf)
-                injectPacket(animPacket, animBuf)
-                animBuf.release()
+                val animPacket = EntityAnimationS2CPacket(player, animType)
+                injectPacket(animPacket)
             } catch (_: Exception) {}
         }
 
@@ -208,14 +206,11 @@ object RecordingEventHandler {
         }
 
         // --- Sleep wake animation (matching ReplayMod) ---
+        // Use Entity constructor: EntityAnimationS2CPacket(player, 2) for WAKE_UP
         if (!player.isSleeping && wasSleeping) {
             try {
-                val animBuf = PacketByteBuf(Unpooled.buffer())
-                animBuf.writeVarInt(player.id)
-                animBuf.writeByte(2) // 2 = leave bed animation
-                val animPacket = EntityAnimationS2CPacket(animBuf)
-                injectPacket(animPacket, animBuf)
-                animBuf.release()
+                val animPacket = EntityAnimationS2CPacket(player, 2)
+                injectPacket(animPacket)
             } catch (_: Exception) {}
             wasSleeping = false
         }

@@ -16,9 +16,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  * fight against the recorded rotation values, causing jitter.
  *
  * We suppress:
- * - onCursorPos (prevents mouse-driven camera rotation)
- * - onMouseButton (prevents click actions during replay)
+ * - onCursorPos (prevents mouse-driven camera rotation / yaw+pitch changes)
  * - onMouseScroll (prevents scroll wheel hotbar changes during replay)
+ *
+ * We DO NOT suppress:
+ * - onMouseButton (allows mouse clicks for UI interaction / Escape menu)
  */
 @Mixin(Mouse.class)
 public class MouseMixin {
@@ -32,18 +34,6 @@ public class MouseMixin {
      */
     @Inject(method = "onCursorPos", at = @At("HEAD"), cancellable = true)
     private void mcap_onCursorPos(long window, double x, double y, CallbackInfo ci) {
-        if (ReplayState.isReplayActive()) {
-            ci.cancel();
-        }
-    }
-
-    /**
-     * Cancel mouse button processing during replay.
-     * Prevents the player from clicking (attack/use) during replay,
-     * which would cause unintended interactions with the replay world.
-     */
-    @Inject(method = "onMouseButton", at = @At("HEAD"), cancellable = true)
-    private void mcap_onMouseButton(long window, int button, int action, int mods, CallbackInfo ci) {
         if (ReplayState.isReplayActive()) {
             ci.cancel();
         }
