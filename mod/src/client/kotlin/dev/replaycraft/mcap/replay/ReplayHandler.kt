@@ -79,6 +79,10 @@ class ReplayHandler {
     private var guiWaitTicks: Int = 0
     private val MAX_GUI_WAIT_TICKS = 100 // 5 seconds max wait
 
+    // Whether to auto-play once GUI is ready. Set to true for initial load,
+    // but preserved as wasPlaying for session switches so user's pause state is respected.
+    private var autoPlayAfterGuiReady: Boolean = true
+
 
     /**
      * Start replay for a specific session directory (called from ReplayViewerScreen).
@@ -347,6 +351,7 @@ class ReplayHandler {
             isPlaying = false
             guiReady = false
             guiWaitTicks = 0
+            autoPlayAfterGuiReady = true  // Default: auto-play for initial load
             println("[MCAP] World setup complete, waiting for GUI to render before auto-play...")
         }
     }
@@ -428,8 +433,8 @@ class ReplayHandler {
 
             if ((noBlockingScreen && worldExists && rendererReady) || timedOut) {
                 guiReady = true
-                isPlaying = true
-                println("[MCAP] GUI ready after $guiWaitTicks ticks, auto-playing from tick $tick")
+                isPlaying = autoPlayAfterGuiReady
+                println("[MCAP] GUI ready after $guiWaitTicks ticks, ${if (isPlaying) "auto-playing" else "paused"} from tick $tick")
             }
             return
         }
@@ -599,7 +604,9 @@ class ReplayHandler {
             stop()
             return
         }
-        isPlaying = wasPlaying
+        // Respect user's play/pause state: set autoPlayAfterGuiReady so the
+        // GUI wait loop uses the correct state instead of always auto-playing.
+        autoPlayAfterGuiReady = wasPlaying
     }
 
     fun prevSession() {
@@ -621,7 +628,8 @@ class ReplayHandler {
             stop()
             return
         }
-        isPlaying = wasPlaying
+        // Respect user's play/pause state
+        autoPlayAfterGuiReady = wasPlaying
     }
 
     fun renderHud(ctx: net.minecraft.client.gui.DrawContext) {

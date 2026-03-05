@@ -8,6 +8,7 @@ import net.minecraft.network.NetworkSide
 import net.minecraft.network.NetworkState
 import net.minecraft.network.PacketByteBuf
 import net.minecraft.network.packet.Packet
+import net.minecraft.entity.Entity
 import net.minecraft.network.packet.s2c.play.*
 import net.minecraft.util.Hand
 import net.minecraft.util.math.BlockPos
@@ -25,7 +26,7 @@ import net.minecraft.util.math.BlockPos
  * - EntitySetHeadYawS2CPacket (head rotation)
  * - EntityEquipmentUpdateS2CPacket (held items, armor)
  * - EntityAnimationS2CPacket (arm swing, sleep wake)
- * - EntityAttachS2CPacket (vehicle mount/dismount)
+ * - EntityPassengersSetS2CPacket (vehicle mount/dismount)
  * - WorldEventS2CPacket (client-side effects like block break sounds)
  * - BlockBreakingProgressS2CPacket (block breaking animation, via WorldRendererMixin)
  *
@@ -40,6 +41,7 @@ object RecordingEventHandler {
     private var lastPitch = Float.NaN
     private var lastRotationYawHead: Int? = null
     private var lastRiding = -1
+    private var lastVehicle: Entity? = null
     private var wasSleeping = false
     private var ticksSinceLastCorrection = 0
     private val playerItems = Array<ItemStack>(EquipmentSlot.values().size) { ItemStack.EMPTY }
@@ -52,6 +54,7 @@ object RecordingEventHandler {
         lastPitch = Float.NaN
         lastRotationYawHead = null
         lastRiding = -1
+        lastVehicle = null
         wasSleeping = false
         ticksSinceLastCorrection = 0
         playerItems.fill(ItemStack.EMPTY)
@@ -185,14 +188,23 @@ object RecordingEventHandler {
             } catch (_: Exception) {}
         }
 
-        // --- Vehicle mount/dismount (matching ReplayMod) ---
+        // --- Vehicle mount/dismount (using EntityPassengersSetS2CPacket) ---
+        // In MC 1.20.1, EntityAttachS2CPacket is for leashes, not vehicles.
+        // Vehicle mounting uses EntityPassengersSetS2CPacket which lists passenger IDs.
         val vehicle = player.vehicle
         val vehicleId = vehicle?.id ?: -1
         if (lastRiding != vehicleId) {
-            lastRiding = vehicleId
             try {
-                injectPacket(EntityAttachS2CPacket(player, vehicle))
+                if (vehicle != null) {
+                    // Player mounted a vehicle: send passengers for the new vehicle
+                    injectPacket(EntityPassengersSetS2CPacket(vehicle))
+                } else if (lastVehicle != null) {
+                    // Player dismounted: send updated passengers for old vehicle (player removed)
+                    injectPacket(EntityPassengersSetS2CPacket(lastVehicle!!))
+                }
             } catch (_: Exception) {}
+            lastRiding = vehicleId
+            lastVehicle = vehicle
         }
 
         // --- Sleep wake animation (matching ReplayMod) ---
