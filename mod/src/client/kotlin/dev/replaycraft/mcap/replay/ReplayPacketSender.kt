@@ -151,15 +151,17 @@ class ReplayPacketSender(
                 continue
             }
 
+            var packetByteBuf: PacketByteBuf? = null
             try {
                 // Decode the packet directly using NetworkState.PLAY
                 // This is the same thing DecoderHandler.decode() does internally,
                 // but without the ByteToMessageDecoder cumulation wrapper
-                val packetByteBuf = PacketByteBuf(Unpooled.wrappedBuffer(packetData))
+                packetByteBuf = PacketByteBuf(Unpooled.wrappedBuffer(packetData))
                 val packet = NetworkState.PLAY.getPacketHandler(
                     NetworkSide.CLIENTBOUND, packetId, packetByteBuf
                 )
                 packetByteBuf.release()
+                packetByteBuf = null
 
                 if (packet != null) {
                     // Fire the decoded packet into the pipeline starting at the bundler
@@ -170,6 +172,7 @@ class ReplayPacketSender(
             } catch (e: Exception) {
                 // Skip packets that fail to decode - errors are isolated per-packet
                 // (no cumulation corruption since we don't use ByteToMessageDecoder)
+                packetByteBuf?.release()
             }
         }
 

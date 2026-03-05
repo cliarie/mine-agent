@@ -308,8 +308,15 @@ class ReplayHandler {
 
         worldLoaded = true
         tick = setupEnd + 1 // Start playback after setup ticks (avoids re-dispatching last setup tick)
-        isPlaying = true // Auto-play immediately after world setup
-        println("[MCAP] World setup complete, auto-playing from tick $tick")
+        if (tick >= maxTick) {
+            // Short session: all ticks already dispatched during setup
+            tick = maxTick
+            isPlaying = false
+            println("[MCAP] World setup complete, short session fully dispatched (tick $tick)")
+        } else {
+            isPlaying = true // Auto-play immediately after world setup
+            println("[MCAP] World setup complete, auto-playing from tick $tick")
+        }
     }
 
     /**
