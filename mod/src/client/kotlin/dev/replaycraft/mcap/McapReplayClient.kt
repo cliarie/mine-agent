@@ -13,6 +13,7 @@ import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback
 import net.minecraft.client.MinecraftClient
+import net.minecraft.client.gui.screen.GameMenuScreen
 import net.minecraft.client.option.KeyBinding
 import net.minecraft.client.util.InputUtil
 import org.lwjgl.glfw.GLFW
@@ -113,13 +114,20 @@ object McapReplayClient : ClientModInitializer {
                 lastNextKeyState = nextKeyDown
 
                 // Exit replay (Escape key) - return to title screen
-                val exitKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_ESCAPE) == GLFW.GLFW_PRESS
-                if (exitKeyDown && !lastExitKeyState && client.currentScreen == null) {
-                    lastExitKeyState = exitKeyDown
+                // Minecraft processes Escape first and opens GameMenuScreen before
+                // END_CLIENT_TICK runs, so we detect the GameMenuScreen and intercept it.
+                // If no screen is open, also check raw GLFW state as a fallback.
+                val escapePressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_ESCAPE) == GLFW.GLFW_PRESS
+                val gameMenuOpened = client.currentScreen is GameMenuScreen
+                if (gameMenuOpened || (escapePressed && !lastExitKeyState && client.currentScreen == null)) {
+                    lastExitKeyState = escapePressed
+                    if (gameMenuOpened) {
+                        client.setScreen(null) // Close the GameMenuScreen first
+                    }
                     replay.stop()
                     return@EndTick
                 }
-                lastExitKeyState = exitKeyDown
+                lastExitKeyState = escapePressed
 
                 replay.onClientTick(client)
             } else {
