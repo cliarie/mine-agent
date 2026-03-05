@@ -430,7 +430,7 @@ class ReplayHandler {
     }
 
     fun stepOneTick(client: MinecraftClient) {
-        if (!isActive || !worldLoaded) return
+        if (!isActive || !worldLoaded || !guiReady) return
         if (isPlaying) return
         if (tick >= maxTick) return // Already at end, don't re-dispatch
         dispatchTickPackets(client)
