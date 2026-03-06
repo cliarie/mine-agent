@@ -40,8 +40,8 @@ object McapReplayClient : ClientModInitializer {
         writer = CaptureWriter(captureBuffer, client.runDirectory.absolutePath)
 
         ClientLifecycleEvents.CLIENT_STOPPING.register(ClientLifecycleEvents.ClientStopping {
-            MlSessionManager.stop(client)
             writer.stop()
+            MlSessionManager.stop(client)
         })
 
         // Replay controls (no R key for starting replay - replay is started from title screen Replay Center)
@@ -83,8 +83,8 @@ object McapReplayClient : ClientModInitializer {
             val isInWorld = client.player != null && client.world != null
             if (wasInWorld && !isInWorld && (replay == null || !replay.isActive)) {
                 println("[MCAP] World disconnected, flushing capture data")
-                MlSessionManager.stop(client)
                 writer.flush()
+                MlSessionManager.stop(client)
                 mlSessionStartAttempted = false
             }
             // Detect world join: attempt to start ML capture
