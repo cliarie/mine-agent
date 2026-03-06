@@ -32,12 +32,16 @@ object MlSessionManager {
     fun tryStart(client: MinecraftClient): Boolean {
         if (active) return true
 
-        if (!SessionGate.shouldCapture(client)) {
-            println("[MCAP ML] Session gate failed — skipping ML capture")
-            return false
+        when (SessionGate.checkGate(client)) {
+            SessionGate.GateResult.DENY_PERMANENT -> {
+                println("[MCAP ML] Session gate rejected — not in survival mode, skipping ML capture")
+                return true // Return true to stop retrying (permanent rejection)
+            }
+            SessionGate.GateResult.DENY_TRANSIENT -> {
+                return false // Return false to retry next tick (e.g. screen still open)
+            }
+            SessionGate.GateResult.ALLOW -> { /* proceed */ }
         }
-
-        client.player ?: return false
 
         sessionId = UUID.randomUUID().toString()
         val baseDir = File(client.runDirectory, "mcap_replay/ml_sessions/$sessionId")
