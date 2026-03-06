@@ -48,7 +48,6 @@ fun nativeFileName(os: String): String {
     }
 }
 
-val awsSdkVersion = "1.2.28"
 
 dependencies {
     minecraft("com.mojang:minecraft:$minecraftVersion")
@@ -57,9 +56,6 @@ dependencies {
     modImplementation("net.fabricmc.fabric-api:fabric-api:$fabricVersion")
 
     modImplementation("net.fabricmc:fabric-language-kotlin:$fabricKotlinVersion")
-
-    // AWS SDK for S3 upload of session data
-    implementation("aws.sdk.kotlin:s3:$awsSdkVersion")
 }
 
 java {
