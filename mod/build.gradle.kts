@@ -48,6 +48,7 @@ fun nativeFileName(os: String): String {
     }
 }
 
+
 dependencies {
     minecraft("com.mojang:minecraft:$minecraftVersion")
     mappings("net.fabricmc:yarn:$yarnMappings:v2")
