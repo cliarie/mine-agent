@@ -68,25 +68,39 @@ object S3Uploader {
 
     /**
      * Find the convert_upload.py script.
-     * Searches relative to the run directory (Minecraft instance dir),
-     * then falls back to common locations.
+     *
+     * Search order:
+     *   1. MCAP_CONVERT_SCRIPT env var (explicit override)
+     *   2. Already-extracted copy at <runDir>/mcap_replay/convert_upload.py
+     *   3. Extract from mod JAR classpath resource to <runDir>/mcap_replay/convert_upload.py
      */
     private fun findScript(runDir: File): File? {
-        // Check MCAP_CONVERT_SCRIPT env var
+        // 1. Check MCAP_CONVERT_SCRIPT env var
         val envScript = System.getenv("MCAP_CONVERT_SCRIPT")
         if (envScript != null) {
             val f = File(envScript)
             if (f.exists()) return f
         }
 
-        // Common locations relative to Minecraft run directory
-        val candidates = listOf(
-            File(runDir, "scripts/convert_upload.py"),
-            File(runDir, "../scripts/convert_upload.py"),
-            File(runDir, "convert_upload.py"),
-        )
-        for (f in candidates) {
-            if (f.exists()) return f
+        // 2. Check if already extracted
+        val extractedScript = File(runDir, "mcap_replay/convert_upload.py")
+        if (extractedScript.exists()) return extractedScript
+
+        // 3. Extract from classpath resource bundled in the mod JAR
+        try {
+            val resourceStream = S3Uploader::class.java.getResourceAsStream("/scripts/convert_upload.py")
+            if (resourceStream != null) {
+                extractedScript.parentFile?.mkdirs()
+                resourceStream.use { input ->
+                    extractedScript.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                println("[MCAP ML] Extracted convert_upload.py to ${extractedScript.absolutePath}")
+                return extractedScript
+            }
+        } catch (e: Exception) {
+            println("[MCAP ML] Failed to extract convert_upload.py from JAR: ${e.message}")
         }
 
         return null
