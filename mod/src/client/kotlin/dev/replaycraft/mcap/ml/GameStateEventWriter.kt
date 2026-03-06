@@ -120,6 +120,10 @@ class GameStateEventWriter(private val outputFile: File) {
     fun close() {
         try {
             stream?.flush()
+        } catch (e: Exception) {
+            println("[MCAP ML] Error flushing gamestate_events.bin: ${e.message}")
+        }
+        try {
             stream?.close()
         } catch (e: Exception) {
             println("[MCAP ML] Error closing gamestate_events.bin: ${e.message}")
