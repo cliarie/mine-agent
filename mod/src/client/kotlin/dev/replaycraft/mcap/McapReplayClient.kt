@@ -92,8 +92,9 @@ object McapReplayClient : ClientModInitializer {
                 mlSessionStartAttempted = false
             }
             if (isInWorld && !mlSessionStartAttempted && (replay == null || !replay.isActive)) {
-                mlSessionStartAttempted = true
-                MlSessionManager.tryStart(client)
+                if (MlSessionManager.tryStart(client)) {
+                    mlSessionStartAttempted = true
+                }
             }
             wasInWorld = isInWorld
 

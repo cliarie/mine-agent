@@ -111,8 +111,21 @@ object MlSessionManager {
         val dir = sessionDir ?: return
         MlManifest.writeComplete(dir, sessionId, client)
 
+        // Find packets.bin from the most recent native capture session
+        val extraFiles = mutableMapOf<String, File>()
+        val nativeSessionsDir = File(client.runDirectory, "mcap_replay/sessions")
+        if (nativeSessionsDir.isDirectory) {
+            val latestSession = nativeSessionsDir.listFiles()
+                ?.filter { it.isDirectory }
+                ?.maxByOrNull { it.name }
+            val packetsBin = latestSession?.let { File(it, "packets.bin") }
+            if (packetsBin != null && packetsBin.exists()) {
+                extraFiles["packets.bin"] = packetsBin
+            }
+        }
+
         // Trigger S3 upload (async, non-blocking)
-        S3Uploader.uploadSession(dir, sessionId, client.runDirectory)
+        S3Uploader.uploadSession(dir, sessionId, client.runDirectory, extraFiles)
 
         sessionDir = null
     }

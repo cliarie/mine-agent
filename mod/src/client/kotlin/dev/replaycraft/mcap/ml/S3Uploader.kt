@@ -28,11 +28,12 @@ object S3Uploader {
     /**
      * Upload session files to S3 asynchronously.
      *
-     * @param sessionDir directory containing the session files
+     * @param sessionDir directory containing the ML session files
      * @param sessionId UUID of the session
      * @param runDir Minecraft run directory (for config file lookup)
+     * @param extraFiles additional files to upload mapped as s3KeyName -> localFile
      */
-    fun uploadSession(sessionDir: File, sessionId: String, runDir: File) {
+    fun uploadSession(sessionDir: File, sessionId: String, runDir: File, extraFiles: Map<String, File> = emptyMap()) {
         val config = loadConfig(runDir)
         val bucket = config.bucket
         val region = config.region
@@ -43,13 +44,19 @@ object S3Uploader {
             return
         }
 
-        val filesToUpload = listOf("packets.bin", "gamestate.bin", "gamestate_events.bin", "manifest.json")
-        val existingFiles = filesToUpload.mapNotNull { name ->
+        val mlFiles = listOf("gamestate.bin", "gamestate_events.bin", "manifest.json")
+        // Collect ML session files that exist
+        val filesToUpload = mutableListOf<Pair<String, File>>()
+        for (name in mlFiles) {
             val file = File(sessionDir, name)
-            if (file.exists()) file else null
+            if (file.exists()) filesToUpload.add(name to file)
+        }
+        // Add extra files (e.g. packets.bin from native capture directory)
+        for ((name, file) in extraFiles) {
+            if (file.exists()) filesToUpload.add(name to file)
         }
 
-        if (existingFiles.isEmpty()) {
+        if (filesToUpload.isEmpty()) {
             println("[MCAP ML] S3 upload skipped: no files found in $sessionDir")
             return
         }
@@ -59,9 +66,9 @@ object S3Uploader {
                 S3Client.fromEnvironment {
                     this.region = region
                 }.use { s3 ->
-                    for (file in existingFiles) {
-                        val key = "raw/session_id=$sessionId/${file.name}"
-                        println("[MCAP ML] Uploading ${file.name} to s3://$bucket/$key")
+                    for ((name, file) in filesToUpload) {
+                        val key = "raw/session_id=$sessionId/$name"
+                        println("[MCAP ML] Uploading $name to s3://$bucket/$key")
 
                         s3.putObject(PutObjectRequest {
                             this.bucket = bucket
