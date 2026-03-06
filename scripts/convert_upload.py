@@ -36,7 +36,7 @@ except ImportError:
 
 # gamestate.bin record layout (big-endian, 64 bytes per record)
 # See GameStateWriter.kt for authoritative field order
-TICK_RECORD_FORMAT = ">iqfffffffihbbiiff"
+TICK_RECORD_FORMAT = ">iqffffffiihbbiiff"
 TICK_RECORD_SIZE = struct.calcsize(TICK_RECORD_FORMAT)
 assert TICK_RECORD_SIZE == 64, f"Expected 64 bytes, got {TICK_RECORD_SIZE}"
 
