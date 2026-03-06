@@ -6,6 +6,7 @@ import dev.replaycraft.mcap.capture.RecordingEventHandler
 import dev.replaycraft.mcap.capture.TickRingBuffer
 import dev.replaycraft.mcap.video.VideoRecorder
 import dev.replaycraft.mcap.native.NativeBridge
+import dev.replaycraft.mcap.ml.MlSessionManager
 import dev.replaycraft.mcap.replay.McapReplayClientBridge
 import net.fabricmc.api.ClientModInitializer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents
@@ -39,6 +40,7 @@ object McapReplayClient : ClientModInitializer {
         writer = CaptureWriter(captureBuffer, client.runDirectory.absolutePath)
 
         ClientLifecycleEvents.CLIENT_STOPPING.register(ClientLifecycleEvents.ClientStopping {
+            MlSessionManager.stop(client)
             writer.stop()
         })
 
@@ -69,6 +71,8 @@ object McapReplayClient : ClientModInitializer {
         
         // Track whether player was in a world last tick (to detect disconnect)
         var wasInWorld = false
+        // Track whether ML session start has been attempted for current world
+        var mlSessionStartAttempted = false
         
         // Handle keybindings on client tick
         ClientTickEvents.END_CLIENT_TICK.register(ClientTickEvents.EndTick { _ ->
@@ -79,9 +83,24 @@ object McapReplayClient : ClientModInitializer {
             val isInWorld = client.player != null && client.world != null
             if (wasInWorld && !isInWorld && (replay == null || !replay.isActive)) {
                 println("[MCAP] World disconnected, flushing capture data")
+                MlSessionManager.stop(client)
                 writer.flush()
+                mlSessionStartAttempted = false
+            }
+            // Detect world join: attempt to start ML capture
+            if (isInWorld && !wasInWorld) {
+                mlSessionStartAttempted = false
+            }
+            if (isInWorld && !mlSessionStartAttempted && (replay == null || !replay.isActive)) {
+                mlSessionStartAttempted = true
+                MlSessionManager.tryStart(client)
             }
             wasInWorld = isInWorld
+
+            // ML tick processing (parallel to existing capture)
+            if (isInWorld && MlSessionManager.isActive() && (replay == null || !replay.isActive)) {
+                MlSessionManager.onTick(client)
+            }
 
             if (replay != null && replay.isActive) {
                 // Use direct GLFW key checking for all replay controls (more reliable)
