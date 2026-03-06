@@ -395,11 +395,19 @@ class TestEndToEnd:
         assert len(df_ticks) == 5
         assert df_ticks["tick"].to_list() == [0, 1, 2, 3, 4]
         assert all(h == 20 for h in df_ticks["hunger"].to_list())
+        # session_id must be present in every row
+        assert "session_id" in df_ticks.columns
+        assert all(s == "test-uuid" for s in df_ticks["session_id"].to_list())
 
         df_events = pl.read_parquet(events_pq)
         assert len(df_events) == 2
         assert df_events["item_name"].to_list() == ["stone", "stone"]
         assert df_events["count"].to_list() == [3, 0]
+        # session_id must be present in every row
+        assert "session_id" in df_events.columns
+        assert all(s == "test-uuid" for s in df_events["session_id"].to_list())
+        # event_type must be string, not int
+        assert df_events["event_type"].to_list() == ["INVENTORY_DELTA", "INVENTORY_DELTA"]
 
         # Verify upload_to_s3 was called with correct args
         mock_upload.assert_called_once()
@@ -441,6 +449,10 @@ class TestEndToEnd:
 
         # events.parquet should still be created
         assert (session_dir / "events.parquet").exists()
+        df_events = pl.read_parquet(session_dir / "events.parquet")
+        assert "session_id" in df_events.columns
+        assert df_events["session_id"].to_list() == ["test-uuid"]
+        assert df_events["event_type"].to_list() == ["INVENTORY_DELTA"]
         # tick_stream.parquet should NOT exist
         assert not (session_dir / "tick_stream.parquet").exists()
         # Upload should still be called (for events + manifest)
@@ -466,6 +478,9 @@ class TestEndToEnd:
             convert_upload.main()
 
         assert (session_dir / "tick_stream.parquet").exists()
+        df_ticks = pl.read_parquet(session_dir / "tick_stream.parquet")
+        assert "session_id" in df_ticks.columns
+        assert df_ticks["session_id"].to_list() == ["test-uuid"]
         assert not (session_dir / "events.parquet").exists()
         mock_upload.assert_called_once()
 

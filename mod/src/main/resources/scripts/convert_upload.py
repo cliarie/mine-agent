@@ -67,6 +67,9 @@ EVENT_HEADER_SIZE = struct.calcsize(EVENT_HEADER_FORMAT)  # 6 bytes
 EVENT_TAIL_FORMAT = ">hh"
 EVENT_TAIL_SIZE = struct.calcsize(EVENT_TAIL_FORMAT)  # 4 bytes
 
+# Decode integer event_type to string labels expected by mine-train
+EVENT_TYPES = {0: "INVENTORY_DELTA", 1: "CRAFTED", 2: "PLAYER_DIED", 3: "SLEPT"}
+
 
 def read_gamestate_bin(path: Path) -> pl.DataFrame:
     """Read gamestate.bin into a polars DataFrame."""
@@ -174,6 +177,7 @@ def main() -> None:
     if gamestate_bin.exists():
         print(f"[convert_upload] Converting gamestate.bin ({gamestate_bin.stat().st_size} bytes)")
         df = read_gamestate_bin(gamestate_bin)
+        df = df.with_columns(pl.lit(session_id).alias("session_id"))
         df.write_parquet(tick_stream_parquet)
         print(f"[convert_upload] Wrote tick_stream.parquet ({len(df)} rows)")
     else:
@@ -183,6 +187,10 @@ def main() -> None:
     if events_bin.exists():
         print(f"[convert_upload] Converting gamestate_events.bin ({events_bin.stat().st_size} bytes)")
         df_events = read_gamestate_events_bin(events_bin)
+        df_events = df_events.with_columns(
+            pl.col("event_type").replace_strict(EVENT_TYPES).alias("event_type"),
+            pl.lit(session_id).alias("session_id"),
+        )
         df_events.write_parquet(events_parquet)
         print(f"[convert_upload] Wrote events.parquet ({len(df_events)} rows)")
     else:
