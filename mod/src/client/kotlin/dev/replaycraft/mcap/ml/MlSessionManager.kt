@@ -115,8 +115,8 @@ object MlSessionManager {
         val dir = sessionDir ?: return
         MlManifest.writeComplete(dir, sessionId, client)
 
-        // Launch Python script to convert binary -> Parquet and upload to S3 (fire-and-forget)
-        S3Uploader.launchConvertAndUpload(dir, sessionId, client.runDirectory)
+        // Upload session files to S3 via mine-auth presigned URLs (fire-and-forget)
+        S3Uploader.uploadViaAuth(dir, sessionId, client.runDirectory, client)
 
         sessionDir = null
     }
