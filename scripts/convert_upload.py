@@ -6,15 +6,16 @@ Invoked by the MCAP mod on session end via ProcessBuilder (fire-and-forget).
 
 Usage:
     python3 scripts/convert_upload.py <session_dir> <session_id> <bucket> <region>
+    python3 scripts/convert_upload.py --convert-only <session_dir> <session_id>
 
 Steps:
     1. Read gamestate.bin (fixed 64-byte big-endian records) -> polars DataFrame
     2. Read gamestate_events.bin (variable-length records) -> polars DataFrame
     3. Write tick_stream.parquet and events.parquet
-    4. Upload tick_stream.parquet, events.parquet, manifest.json to S3
-    5. Delete local binary files (gamestate.bin, gamestate_events.bin)
+    4. Upload tick_stream.parquet, events.parquet, manifest.json to S3 (skipped with --convert-only)
+    5. Delete local binary files (gamestate.bin, gamestate_events.bin) (skipped with --convert-only)
 
-Requirements: python3, polars, boto3
+Requirements: python3, polars, boto3 (boto3 only needed for S3 upload mode)
 """
 
 import struct
@@ -25,12 +26,6 @@ try:
     import polars as pl
 except ImportError:
     print("[convert_upload] ERROR: polars not installed. Run: pip install polars", file=sys.stderr)
-    sys.exit(1)
-
-try:
-    import boto3
-except ImportError:
-    print("[convert_upload] ERROR: boto3 not installed. Run: pip install boto3", file=sys.stderr)
     sys.exit(1)
 
 
@@ -155,17 +150,31 @@ def upload_to_s3(
 
 
 def main() -> None:
-    if len(sys.argv) < 5:
-        print(
-            f"Usage: {sys.argv[0]} <session_dir> <session_id> <bucket> <region>",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    convert_only = "--convert-only" in sys.argv
+    args = [a for a in sys.argv[1:] if a != "--convert-only"]
 
-    session_dir = Path(sys.argv[1])
-    session_id = sys.argv[2]
-    bucket = sys.argv[3]
-    region = sys.argv[4]
+    if convert_only:
+        if len(args) < 2:
+            print(
+                f"Usage: {sys.argv[0]} --convert-only <session_dir> <session_id>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        session_dir = Path(args[0])
+        session_id = args[1]
+        bucket = None
+        region = None
+    else:
+        if len(args) < 4:
+            print(
+                f"Usage: {sys.argv[0]} <session_dir> <session_id> <bucket> <region>",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        session_dir = Path(args[0])
+        session_id = args[1]
+        bucket = args[2]
+        region = args[3]
 
     gamestate_bin = session_dir / "gamestate.bin"
     events_bin = session_dir / "gamestate_events.bin"
@@ -196,7 +205,17 @@ def main() -> None:
     else:
         print("[convert_upload] WARNING: gamestate_events.bin not found, skipping", file=sys.stderr)
 
+    if convert_only:
+        print(f"[convert_upload] Conversion complete for session {session_id}")
+        return
+
     # 3. Upload parquet files + manifest.json to S3
+    try:
+        import boto3
+    except ImportError:
+        print("[convert_upload] ERROR: boto3 not installed. Run: pip install boto3", file=sys.stderr)
+        sys.exit(1)
+
     files_to_upload: dict[str, Path] = {}
     if tick_stream_parquet.exists():
         files_to_upload["tick_stream.parquet"] = tick_stream_parquet
