@@ -1,11 +1,13 @@
 package dev.replaycraft.mcap.ml
 
+import com.mojang.authlib.minecraft.MinecraftSessionService
 import net.minecraft.client.MinecraftClient
 import java.io.File
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URI
 import java.security.SecureRandom
+import java.util.UUID
 
 /**
  * Uploads ML session files to S3 via mine-auth presigned URLs.
@@ -44,20 +46,24 @@ object S3Uploader {
             return
         }
 
+        // Capture all session values on the main thread (MinecraftClient is not thread-safe)
         val session = client.session
         val username = session.username
-        val playerUuid = session.uuidOrNull?.toString()
-        if (playerUuid == null) {
+        val playerUuidObj = session.uuidOrNull
+        if (playerUuidObj == null) {
             println("[MCAP ML] S3 upload skipped: player UUID not available")
             return
         }
+        val playerUuid = playerUuidObj.toString()
+        val accessToken = session.accessToken
+        val sessionService = client.sessionService
 
         println("[MCAP ML] Starting authenticated upload for session $sessionId")
 
         // Run on background thread to avoid blocking the game thread
         Thread {
             try {
-                doAuthenticatedUpload(authUrl, username, playerUuid, sessionId, sessionDir, client)
+                doAuthenticatedUpload(authUrl, username, playerUuid, playerUuidObj, accessToken, sessionService, sessionId, sessionDir)
             } catch (e: Exception) {
                 println("[MCAP ML] Upload failed: ${e.message}")
             }
@@ -72,21 +78,22 @@ object S3Uploader {
         authUrl: String,
         username: String,
         playerUuid: String,
+        playerUuidObj: UUID,
+        accessToken: String,
+        sessionService: MinecraftSessionService,
         sessionId: String,
-        sessionDir: File,
-        client: MinecraftClient
+        sessionDir: File
     ) {
         // 1. Generate random serverId
         val serverIdBytes = ByteArray(20)
         secureRandom.nextBytes(serverIdBytes)
         val serverId = serverIdBytes.joinToString("") { "%02x".format(it) }
 
-        // 2. Join server via Mojang session service
+        // 2. Join server via Mojang session service (all values captured on main thread)
         try {
-            val sessionService = client.sessionService
             sessionService.joinServer(
-                client.session.uuidOrNull,
-                client.session.accessToken,
+                playerUuidObj,
+                accessToken,
                 serverId
             )
         } catch (e: Exception) {
