@@ -1,5 +1,6 @@
 package dev.replaycraft.mcap.ml
 
+import com.mojang.authlib.GameProfile
 import com.mojang.authlib.minecraft.MinecraftSessionService
 import net.minecraft.client.MinecraftClient
 import java.io.File
@@ -110,11 +111,11 @@ object S3Uploader {
 
         // 3. Join server via Mojang session service (all values captured on main thread)
         try {
-            sessionService.joinServer(
-                playerUuidObj,
-                accessToken,
-                serverId
-            )
+                sessionService.joinServer(
+                    GameProfile(playerUuidObj, username),
+                    accessToken,
+                    serverId
+                )
         } catch (e: Exception) {
             println("[MCAP ML] Mojang joinServer failed: ${e.message}")
             return
