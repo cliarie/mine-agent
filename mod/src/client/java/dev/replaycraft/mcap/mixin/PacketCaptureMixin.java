@@ -266,6 +266,15 @@ public class PacketCaptureMixin {
     // Entity status (death, damage effects, etc.)
     @Inject(method = "onEntityStatus", at = @At("HEAD"))
     private void mcap_onEntityStatus(EntityStatusS2CPacket packet, CallbackInfo ci) {
+        // Forward to RecordingEventHandler for analytics entity kill detection
+        try {
+            dev.replaycraft.mcap.capture.RecordingEventHandler.INSTANCE.onEntityStatus(
+                packet.getEntity(MinecraftClient.getInstance().world) != null
+                    ? packet.getEntity(MinecraftClient.getInstance().world).getId() : -1,
+                packet.getStatus()
+            );
+        } catch (Exception ignored) {}
+
         if (!PacketCapture.isCapturing()) return;
         try {
             PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());

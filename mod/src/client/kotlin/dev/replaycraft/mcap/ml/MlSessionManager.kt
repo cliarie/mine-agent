@@ -1,5 +1,9 @@
 package dev.replaycraft.mcap.ml
 
+import dev.replaycraft.mcap.analytics.AnalyticsEmitter
+import dev.replaycraft.mcap.analytics.RunOutcome
+import dev.replaycraft.mcap.analytics.RunTracker
+import dev.replaycraft.mcap.capture.RecordingEventHandler
 import net.minecraft.client.MinecraftClient
 import java.io.File
 import java.util.UUID
@@ -23,6 +27,11 @@ object MlSessionManager {
     private var tickCounter = 0
     private var wasSleeping = false
     private var wasAlive = true
+
+    // --- Analytics ---
+    private var runTracker: RunTracker? = null
+    private var analyticsEmitter: AnalyticsEmitter? = null
+    private var endedByDeath = false
 
     /**
      * Attempt to start an ML capture session.
@@ -55,9 +64,29 @@ object MlSessionManager {
         gameStateWriter = GameStateWriter(File(baseDir, "gamestate.bin")).also { it.open() }
         gameStateEventWriter = GameStateEventWriter(File(baseDir, "gamestate_events.bin")).also { it.open() }
 
+        // Initialize analytics tracking
+        val playerId = client.session.uuidOrNull?.toString() ?: "unknown"
+        val modVersion = "0.1.0" // matches gradle.properties mod_version
+        val tracker = RunTracker(sessionId, playerId, modVersion)
+        runTracker = tracker
+        RecordingEventHandler.runTracker = tracker
+
+        // Load analytics config
+        val config = loadAnalyticsConfig(client.runDirectory)
+        val endpoint = config.getProperty("analytics.endpoint", "")
+        val apiKey = config.getProperty("analytics.api_key", "")
+        val enabled = config.getProperty("analytics.enabled", "true")
+        if (enabled == "true" && apiKey.isNotBlank()) {
+            analyticsEmitter = AnalyticsEmitter(endpoint, apiKey)
+        } else {
+            analyticsEmitter = null
+            println("[MCAP Analytics] Analytics disabled — set analytics.api_key to enable")
+        }
+
         tickCounter = 0
         wasSleeping = false
         wasAlive = true
+        endedByDeath = false
         active = true
 
         println("[MCAP ML] ML capture started — session $sessionId")
@@ -82,6 +111,7 @@ object MlSessionManager {
         val isAlive = player.isAlive
         if (wasAlive && !isAlive) {
             gameStateEventWriter?.writePlayerDied(tickCounter)
+            endedByDeath = true
         }
         wasAlive = isAlive
 
@@ -105,6 +135,25 @@ object MlSessionManager {
 
         println("[MCAP ML] Stopping ML capture — session $sessionId ($tickCounter ticks)")
 
+        // Emit analytics before finalizing (lightweight, fires first)
+        val tracker = runTracker
+        val emitter = analyticsEmitter
+        if (tracker != null && emitter != null) {
+            val dragonKilled = tracker.killTick >= 0
+            val outcome = when {
+                dragonKilled -> RunOutcome.WIN
+                endedByDeath -> RunOutcome.DEATH
+                else -> RunOutcome.QUIT
+            }
+            val summary = tracker.buildSummary(outcome)
+            emitter.emit(summary)
+        }
+
+        // Clear analytics state
+        RecordingEventHandler.runTracker = null
+        runTracker = null
+        analyticsEmitter = null
+
         // Close writers
         gameStateWriter?.close()
         gameStateWriter = null
@@ -125,4 +174,22 @@ object MlSessionManager {
      * Whether an ML capture session is currently active.
      */
     fun isActive(): Boolean = active
+
+    fun getSessionId(): String = sessionId
+
+    /**
+     * Load analytics config from mcap_ml_config.properties.
+     */
+    private fun loadAnalyticsConfig(runDir: File): java.util.Properties {
+        val props = java.util.Properties()
+        val configFile = File(runDir, "mcap_ml_config.properties")
+        if (configFile.exists()) {
+            try {
+                configFile.inputStream().use { props.load(it) }
+            } catch (e: Exception) {
+                println("[MCAP Analytics] Failed to load config: ${e.message}")
+            }
+        }
+        return props
+    }
 }

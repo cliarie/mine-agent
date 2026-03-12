@@ -4,6 +4,11 @@ import dev.replaycraft.mcap.capture.PacketCapture;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.BlockItem;
+import net.minecraft.registry.Registries;
+import net.minecraft.util.ActionResult;
+import net.minecraft.util.Hand;
+import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import org.spongepowered.asm.mixin.Mixin;
@@ -117,5 +122,22 @@ public abstract class ClientPlayerInteractionManagerMixin {
         data[0] = hand;
         
         PacketCapture.capturePacket(PKT_CLIENT_ARM_SWING, data);
+    }
+
+    // Capture block placement for analytics (bed tracking in the End)
+    @Inject(method = "interactBlock", at = @At("HEAD"))
+    private void mcap_onInteractBlock(
+            net.minecraft.client.network.ClientPlayerEntity player,
+            Hand hand,
+            BlockHitResult hitResult,
+            CallbackInfoReturnable<ActionResult> cir
+    ) {
+        try {
+            net.minecraft.item.ItemStack stack = player.getStackInHand(hand);
+            if (!stack.isEmpty() && stack.getItem() instanceof BlockItem) {
+                String blockId = Registries.BLOCK.getId(((BlockItem) stack.getItem()).getBlock()).toString();
+                dev.replaycraft.mcap.capture.RecordingEventHandler.INSTANCE.onBlockPlaced(blockId);
+            }
+        } catch (Exception ignored) {}
     }
 }
