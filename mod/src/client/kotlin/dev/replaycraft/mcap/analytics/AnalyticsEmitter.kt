@@ -28,10 +28,12 @@ class AnalyticsEmitter(
     private fun doPost(summary: RunSummary, attempt: Int) {
         try {
             val body = summary.toJson()
+            println("[MCAP Analytics] Analytics emit: run=${summary.runId} outcome=${summary.outcome} ticks=${summary.durationTicks} attempt=$attempt endpoint=$endpoint")
             val request = HttpRequest.newBuilder()
                 .uri(URI.create(endpoint))
                 .timeout(Duration.ofSeconds(10))
                 .header("Content-Type", "application/json")
+                .header("apikey", apiKey)
                 .header("Authorization", "Bearer $apiKey")
                 .header("X-Mod-Version", summary.modVersion)
                 .POST(HttpRequest.BodyPublishers.ofString(body))

@@ -75,6 +75,10 @@ loom {
     }
 }
 
+// Allow test source set to see client classes (analytics, ML, capture)
+sourceSets["test"].compileClasspath += sourceSets["client"].output
+sourceSets["test"].runtimeClasspath += sourceSets["client"].output
+
 tasks {
     val buildNative by registering(Exec::class) {
         group = "build"
