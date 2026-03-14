@@ -7,6 +7,7 @@ import dev.replaycraft.mcap.capture.TickRingBuffer
 import dev.replaycraft.mcap.video.VideoRecorder
 import dev.replaycraft.mcap.native.NativeBridge
 import dev.replaycraft.mcap.ml.MlSessionManager
+import dev.replaycraft.mcap.mcsr.McsrReplayHandler
 import dev.replaycraft.mcap.replay.McapReplayClientBridge
 import net.fabricmc.api.ClientModInitializer
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents
@@ -83,10 +84,11 @@ object McapReplayClient : ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(ClientTickEvents.EndTick { _ ->
             val window = client.window.handle
             val replay = McapReplayClientBridge.getActiveReplay()
+            val mcsrReplay = McapReplayClientBridge.getActiveMcsrReplay()
 
             // Detect world disconnect: flush capture data so session appears in Replay Center
             val isInWorld = client.player != null && client.world != null
-            if (wasInWorld && !isInWorld && (replay == null || !replay.isActive)) {
+            if (wasInWorld && !isInWorld && !McapReplayClientBridge.isAnyReplayActive()) {
                 println("[MCAP] World disconnected, flushing capture data")
                 writer.flush()
                 MlSessionManager.stop(client)
@@ -96,7 +98,7 @@ object McapReplayClient : ClientModInitializer {
             if (isInWorld && !wasInWorld) {
                 mlSessionStartAttempted = false
             }
-            if (isInWorld && !mlSessionStartAttempted && (replay == null || !replay.isActive)) {
+            if (isInWorld && !mlSessionStartAttempted && !McapReplayClientBridge.isAnyReplayActive()) {
                 if (MlSessionManager.tryStart(client)) {
                     mlSessionStartAttempted = true
                 }
@@ -104,7 +106,7 @@ object McapReplayClient : ClientModInitializer {
             wasInWorld = isInWorld
 
             // ML tick processing (parallel to existing capture)
-            if (isInWorld && MlSessionManager.isActive() && (replay == null || !replay.isActive)) {
+            if (isInWorld && MlSessionManager.isActive() && !McapReplayClientBridge.isAnyReplayActive()) {
                 MlSessionManager.onTick(client)
             }
 
@@ -122,6 +124,59 @@ object McapReplayClient : ClientModInitializer {
             }
             lastF8KeyState = f8Down
 
+            // ---- MCSR Replay Controls ----
+            if (mcsrReplay != null && mcsrReplay.isActive) {
+                // Play/Pause (G)
+                val playPauseKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_G) == GLFW.GLFW_PRESS
+                if (playPauseKeyDown && !lastPlayPauseKeyState) {
+                    mcsrReplay.togglePlayPause()
+                }
+                lastPlayPauseKeyState = playPauseKeyDown
+
+                // Step (.)
+                val stepKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_PERIOD) == GLFW.GLFW_PRESS
+                if (stepKeyDown && !lastStepKeyState) {
+                    mcsrReplay.stepOneTick(client)
+                }
+                lastStepKeyState = stepKeyDown
+
+                // Switch player (P)
+                val pKeyDown = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_P) == GLFW.GLFW_PRESS
+                if (pKeyDown && !lastPrevKeyState) {
+                    val players = mcsrReplay.getPlayers()
+                    if (players.size > 1) {
+                        // Cycle through players
+                        val currentIdx = players.indexOfFirst { it.first == mcsrReplay.getPlayers().firstOrNull()?.first }
+                        val nextIdx = (currentIdx + 1) % players.size
+                        mcsrReplay.switchPlayer(players[nextIdx].first)
+                    }
+                }
+                lastPrevKeyState = pKeyDown
+
+                // Exit replay (Escape)
+                val escapePressed = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_ESCAPE) == GLFW.GLFW_PRESS
+                val gameMenuOpened = client.currentScreen is GameMenuScreen
+                val screenJustClosed = wasScreenOpen && client.currentScreen == null
+                if (gameMenuOpened && !wasScreenOpen) {
+                    client.setScreen(null)
+                    lastExitKeyState = escapePressed
+                    wasScreenOpen = false
+                    mcsrReplay.stop()
+                    return@EndTick
+                } else if (escapePressed && !lastExitKeyState && client.currentScreen == null && !screenJustClosed) {
+                    lastExitKeyState = escapePressed
+                    wasScreenOpen = false
+                    mcsrReplay.stop()
+                    return@EndTick
+                }
+                lastExitKeyState = escapePressed
+                wasScreenOpen = client.currentScreen != null
+
+                mcsrReplay.onClientTick(client)
+                return@EndTick
+            }
+
+            // ---- MCAP Replay Controls ----
             if (replay != null && replay.isActive) {
                 // Use direct GLFW key checking for all replay controls (more reliable)
                 
@@ -196,7 +251,8 @@ object McapReplayClient : ClientModInitializer {
         ClientTickEvents.END_WORLD_TICK.register(ClientTickEvents.EndWorldTick { _ ->
             val player = client.player ?: return@EndWorldTick
             val replay = McapReplayClientBridge.getActiveReplay()
-            if (replay != null && replay.isActive) return@EndWorldTick
+            val mcsrReplay = McapReplayClientBridge.getActiveMcsrReplay()
+            if ((replay != null && replay.isActive) || (mcsrReplay != null && mcsrReplay.isActive)) return@EndWorldTick
 
             // Tick-based client state capture (enhanced 48-byte format)
             captureBuffer.tryWriteFromClient(client, player)
@@ -211,6 +267,7 @@ object McapReplayClient : ClientModInitializer {
 
         HudRenderCallback.EVENT.register(HudRenderCallback { drawContext, _ ->
             McapReplayClientBridge.getActiveReplay()?.renderHud(drawContext)
+            McapReplayClientBridge.getActiveMcsrReplay()?.renderHud(drawContext)
         })
 
         writer.start()

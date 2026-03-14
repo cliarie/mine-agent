@@ -56,6 +56,12 @@ dependencies {
     modImplementation("net.fabricmc.fabric-api:fabric-api:$fabricVersion")
 
     modImplementation("net.fabricmc:fabric-language-kotlin:$fabricKotlinVersion")
+
+    // MCSR replay file support (Snappy decompression + JSON parsing)
+    implementation("org.xerial.snappy:snappy-java:1.1.10.5")
+    include("org.xerial.snappy:snappy-java:1.1.10.5")
+    implementation("com.google.code.gson:gson:2.10.1")
+    include("com.google.code.gson:gson:2.10.1")
 }
 
 java {

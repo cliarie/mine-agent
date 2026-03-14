@@ -1,5 +1,7 @@
 package dev.replaycraft.mcap.replay
 
+import dev.replaycraft.mcap.mcsr.McsrReplayFile
+import dev.replaycraft.mcap.mcsr.McsrReplayHandler
 import dev.replaycraft.mcap.native.NativeBridge
 import net.minecraft.client.MinecraftClient
 import net.minecraft.client.gui.DrawContext
@@ -54,42 +56,62 @@ class ReplayViewerScreen(private val parent: Screen) : Screen(Text.literal("Repl
 
     private fun loadSessions() {
         val mc = client ?: return
+
+        // Load MCAP sessions
         val sessionsDir = File(mc.runDirectory, "mcap_replay/sessions")
+        if (sessionsDir.exists()) {
+            val sessions = sessionsDir.listFiles()?.filter { it.isDirectory }?.sortedByDescending { it.name }
+            for (session in sessions.orEmpty()) {
+                val chunksDir = File(session, "chunks")
+                val chunkCount = chunksDir.listFiles()?.count { it.extension == "cap" } ?: 0
+                if (chunkCount < 1) continue
 
-        if (!sessionsDir.exists()) return
+                var maxTick = 0
+                try {
+                    val handle = NativeBridge.nativeOpenReplay(session.absolutePath)
+                    if (handle >= 0) {
+                        maxTick = NativeBridge.nativeGetReplayMaxTick(handle)
+                        NativeBridge.nativeCloseReplay(handle)
+                    }
+                } catch (_: Exception) {}
 
-        val sessions = sessionsDir.listFiles()?.filter { it.isDirectory }?.sortedByDescending { it.name }
-            ?: return
+                sessionList?.addEntry(SessionEntry(session, chunkCount, maxTick))
+            }
+        }
 
-        for (session in sessions) {
-            val chunksDir = File(session, "chunks")
-            val chunkCount = chunksDir.listFiles()?.count { it.extension == "cap" } ?: 0
-            if (chunkCount < 1) continue
+        // Load MCSR replay files from mcap_replay/mcsr/ directory
+        val mcsrDir = File(mc.runDirectory, "mcap_replay/mcsr")
+        if (mcsrDir.exists()) {
+            val mcsrFiles = mcsrDir.listFiles()?.filter {
+                it.isFile && McsrReplayFile.isMcsrReplayFile(it)
+            }?.sortedByDescending { it.lastModified() }
 
-            // Try to get max tick count for duration
-            var maxTick = 0
-            try {
-                val handle = NativeBridge.nativeOpenReplay(session.absolutePath)
-                if (handle >= 0) {
-                    maxTick = NativeBridge.nativeGetReplayMaxTick(handle)
-                    NativeBridge.nativeCloseReplay(handle)
-                }
-            } catch (_: Exception) {}
-
-            sessionList?.addEntry(SessionEntry(session, chunkCount, maxTick))
+            for (mcsrFile in mcsrFiles.orEmpty()) {
+                val meta = McsrReplayFile.loadMeta(mcsrFile)
+                sessionList?.addEntry(McsrSessionEntry(mcsrFile, meta))
+            }
         }
     }
 
     private fun onLoad() {
         val entry = sessionList?.selectedOrNull ?: return
 
-        // Create a ReplayHandler and start replay for the selected session
-        val handler = ReplayHandler()
-        handler.startSession(entry.sessionDir)
-
-        // The ReplayHandler manages its own tick loop via McapReplayClient
-        // Store it as the active replay handler
-        McapReplayClientBridge.setActiveReplay(handler)
+        when (entry) {
+            is McsrSessionEntry -> {
+                // Load MCSR replay file
+                val handler = McsrReplayHandler()
+                handler.start(entry.replayFile)
+                if (handler.isActive) {
+                    McapReplayClientBridge.setActiveMcsrReplay(handler)
+                }
+            }
+            else -> {
+                // Load MCAP session
+                val handler = ReplayHandler()
+                handler.startSession(entry.sessionDir)
+                McapReplayClientBridge.setActiveReplay(handler)
+            }
+        }
     }
 
     private fun onDelete() {
@@ -152,11 +174,14 @@ class ReplayViewerScreen(private val parent: Screen) : Screen(Text.literal("Repl
         }
     }
 
-    inner class SessionEntry(
+    open inner class SessionEntry(
         val sessionDir: File,
         private val chunkCount: Int,
         private val maxTick: Int
     ) : AlwaysSelectedEntryListWidget.Entry<SessionEntry>() {
+
+        /** MCSR replay file, if this is an MCSR entry. Null for MCAP sessions. */
+        open val replayFile: File? get() = null
 
         private val sessionName: String = sessionDir.name
         private val durationStr: String = formatDuration(maxTick)
@@ -201,7 +226,6 @@ class ReplayViewerScreen(private val parent: Screen) : Screen(Text.literal("Repl
 
         private fun formatSessionDate(name: String): String {
             return try {
-                // Session names are typically timestamps like "20260304_231500"
                 val parts = name.split("_")
                 if (parts.size >= 2) {
                     val datePart = parts[0]
@@ -220,6 +244,44 @@ class ReplayViewerScreen(private val parent: Screen) : Screen(Text.literal("Repl
                 name
             }
         }
+    }
+
+    /**
+     * Entry for MCSR Ranked replay files.
+     * Displayed with match type and player info instead of chunk counts.
+     */
+    inner class McsrSessionEntry(
+        override val replayFile: File,
+        private val meta: dev.replaycraft.mcap.mcsr.McsrReplayMeta?
+    ) : SessionEntry(replayFile, 0, 0) {
+
+        override fun render(
+            ctx: DrawContext,
+            index: Int,
+            y: Int,
+            x: Int,
+            entryWidth: Int,
+            entryHeight: Int,
+            mouseX: Int,
+            mouseY: Int,
+            hovered: Boolean,
+            tickDelta: Float
+        ) {
+            val mc = MinecraftClient.getInstance()
+            val tr = mc.textRenderer
+
+            // MCSR tag + match info
+            val title = "[MCSR] ${meta?.matchTypeName() ?: "Unknown"} - ${replayFile.name}"
+            ctx.drawText(tr, title, x + 3, y + 2, 0x55FFFF, true)
+
+            // Players and date
+            val players = meta?.players?.mapNotNull { it.nickname }?.joinToString(" vs ") ?: "Unknown"
+            val date = meta?.dateFormatted() ?: "Unknown date"
+            val info = "$players  |  $date"
+            ctx.drawText(tr, info, x + 3, y + 14, 0xAAAAAA, true)
+        }
+
+        override fun getNarration(): Text = Text.literal("MCSR: ${replayFile.name}")
     }
 }
 
@@ -270,18 +332,32 @@ class ConfirmDeleteScreen(
 
 /**
  * Bridge to set the active replay handler from the screen.
- * This is set from the ReplayViewerScreen and read by McapReplayClient.
+ * Supports both MCAP ReplayHandler and MCSR McsrReplayHandler.
  */
 object McapReplayClientBridge {
     private var activeReplay: ReplayHandler? = null
+    private var activeMcsrReplay: McsrReplayHandler? = null
 
     fun setActiveReplay(handler: ReplayHandler) {
+        activeMcsrReplay = null
         activeReplay = handler
+    }
+
+    fun setActiveMcsrReplay(handler: McsrReplayHandler) {
+        activeReplay = null
+        activeMcsrReplay = handler
     }
 
     fun getActiveReplay(): ReplayHandler? = activeReplay
 
+    fun getActiveMcsrReplay(): McsrReplayHandler? = activeMcsrReplay
+
+    /** Check if any replay (MCAP or MCSR) is active. */
+    fun isAnyReplayActive(): Boolean =
+        (activeReplay?.isActive == true) || (activeMcsrReplay?.isActive == true)
+
     fun clearActiveReplay() {
         activeReplay = null
+        activeMcsrReplay = null
     }
 }
