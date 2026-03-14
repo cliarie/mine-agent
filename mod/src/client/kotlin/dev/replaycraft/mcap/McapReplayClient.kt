@@ -31,6 +31,7 @@ object McapReplayClient : ClientModInitializer {
     private lateinit var keyPrevSession: KeyBinding
     private lateinit var keyNextSession: KeyBinding
     private lateinit var keyRecordVideo: KeyBinding
+    private lateinit var keyAnalyticsDebug: KeyBinding
 
     private val videoRecorder = VideoRecorder()
 
@@ -60,6 +61,9 @@ object McapReplayClient : ClientModInitializer {
         keyRecordVideo = KeyBindingHelper.registerKeyBinding(
             KeyBinding("key.mcap_replay.record_video", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_V, "category.mcap_replay")
         )
+        keyAnalyticsDebug = KeyBindingHelper.registerKeyBinding(
+            KeyBinding("key.mcap_replay.analytics_debug", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, "category.mcap_replay")
+        )
 
         // Track key states for direct GLFW input (more reliable)
         var lastStepKeyState = false
@@ -68,6 +72,7 @@ object McapReplayClient : ClientModInitializer {
         var lastNextKeyState = false
         var lastExitKeyState = false
         var wasScreenOpen = false // Track if a screen was open last tick (for Escape exit logic)
+        var lastF8KeyState = false
         
         // Track whether player was in a world last tick (to detect disconnect)
         var wasInWorld = false
@@ -102,6 +107,20 @@ object McapReplayClient : ClientModInitializer {
             if (isInWorld && MlSessionManager.isActive() && (replay == null || !replay.isActive)) {
                 MlSessionManager.onTick(client)
             }
+
+            // F8 — dump live analytics state
+            val f8Down = GLFW.glfwGetKey(window, GLFW.GLFW_KEY_F8) == GLFW.GLFW_PRESS
+            if (f8Down && !lastF8KeyState && isInWorld) {
+                RecordingEventHandler.runTracker?.let { tracker ->
+                    val phase = tracker.phaseTimer.getCurrentPhase()
+                    val rc = tracker.resourceCounter
+                    println("[MCAP Analytics Debug] session=${MlSessionManager.getSessionId()}")
+                    println("  phase=$phase  overworld=${tracker.phaseTimer.getOverworldTicks()}  nether=${tracker.phaseTimer.getNetherTicks()}  end=${tracker.phaseTimer.getEndTicks()}")
+                    println("  blazeRods=${rc.blazeRodsUsed}  pearls=${rc.pearlsUsed}  beds=${rc.bedsPlaced}  deaths=${rc.deaths}  gold=${rc.goldTraded}")
+                    println("  portalBuild=${tracker.portalBuildTick}  fortress=${tracker.fortressEnterTick}  stronghold=${tracker.strongholdEnterTick}  dragonEnter=${tracker.dragonEnterTick}  kill=${tracker.killTick}")
+                } ?: println("[MCAP Analytics Debug] No active RunTracker")
+            }
+            lastF8KeyState = f8Down
 
             if (replay != null && replay.isActive) {
                 // Use direct GLFW key checking for all replay controls (more reliable)

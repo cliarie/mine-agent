@@ -1,5 +1,6 @@
 package dev.replaycraft.mcap.capture
 
+import dev.replaycraft.mcap.analytics.RunTracker
 import io.netty.buffer.Unpooled
 import net.minecraft.client.MinecraftClient
 import net.minecraft.entity.Entity
@@ -12,6 +13,7 @@ import net.minecraft.network.NetworkState
 import net.minecraft.network.PacketByteBuf
 import net.minecraft.network.packet.Packet
 import net.minecraft.network.packet.s2c.play.*
+import net.minecraft.registry.Registries
 import net.minecraft.util.Hand
 import net.minecraft.util.collection.DefaultedList
 import net.minecraft.util.math.BlockPos
@@ -63,6 +65,12 @@ object RecordingEventHandler {
     private var trackedInventory: Array<ItemStack>? = null
     private var trackedCursorStack: ItemStack = ItemStack.EMPTY
 
+    // --- Analytics tracking ---
+    var runTracker: RunTracker? = null
+    private var lastDimension: String? = null
+    private var analyticsInventory: MutableMap<String, Int> = mutableMapOf()
+    private var analyticsWasAlive = true
+
     fun reset() {
         lastX = Double.NaN
         lastY = Double.NaN
@@ -80,6 +88,9 @@ object RecordingEventHandler {
         trackedCursorStack = ItemStack.EMPTY
         trackedContainerSyncId = -1
         trackedContainerSlots = null
+        lastDimension = null
+        analyticsInventory.clear()
+        analyticsWasAlive = true
     }
 
     /**
@@ -341,6 +352,31 @@ object RecordingEventHandler {
             wasSleeping = true
         }
 
+        // --- Analytics: forward events to RunTracker ---
+        val tracker = runTracker
+        if (tracker != null) {
+            tracker.onTick()
+
+            // Dimension change detection (poll per tick — no mixin exists)
+            val dimKey = client.world?.registryKey?.value?.toString()
+            if (dimKey != null && dimKey != lastDimension) {
+                if (lastDimension != null) {
+                    tracker.onDimensionChange(dimKey)
+                }
+                lastDimension = dimKey
+            }
+
+            // Death detection (same pattern as MlSessionManager)
+            val isAlive = player.isAlive
+            if (analyticsWasAlive && !isAlive) {
+                tracker.onPlayerDeath()
+            }
+            analyticsWasAlive = isAlive
+
+            // Aggregated inventory delta tracking (mirrors GameStateEventWriter approach)
+            trackAnalyticsInventory(player, tracker)
+        }
+
         // --- Inventory slot tracking ---
         // Capture item movements in both client-side inventory (E key) and
         // server-mediated containers. The server sends ScreenHandlerSlotUpdateS2CPacket
@@ -526,6 +562,58 @@ object RecordingEventHandler {
             val packet = BlockBreakingProgressS2CPacket(breakerId, pos, progress)
             injectPacket(packet)
         } catch (_: Exception) {}
+    }
+
+    /**
+     * Aggregate inventory tracking for analytics.
+     * Computes per-item count deltas (same approach as GameStateEventWriter.checkInventory).
+     */
+    private fun trackAnalyticsInventory(player: PlayerEntity, tracker: RunTracker) {
+        try {
+            val inventory = player.inventory
+            val currentInventory = mutableMapOf<String, Int>()
+            for (i in 0 until inventory.size()) {
+                val stack = inventory.getStack(i)
+                if (!stack.isEmpty) {
+                    val itemPath = "minecraft:" + Registries.ITEM.getId(stack.item).path
+                    currentInventory[itemPath] = (currentInventory[itemPath] ?: 0) + stack.count
+                }
+            }
+
+            val allKeys = (analyticsInventory.keys + currentInventory.keys).toSet()
+            for (key in allKeys) {
+                val prev = analyticsInventory[key] ?: 0
+                val curr = currentInventory[key] ?: 0
+                if (prev != curr) {
+                    tracker.onInventoryDelta(key, curr - prev)
+                }
+            }
+
+            analyticsInventory = currentInventory
+        } catch (_: Exception) {
+            // Ignore inventory tracking errors
+        }
+    }
+
+    /**
+     * Called when an entity status packet is received.
+     * Status 3 = entity death — used to detect dragon kill.
+     */
+    fun onEntityStatus(entityId: Int, status: Int) {
+        if (status != 3) return
+        val tracker = runTracker ?: return
+        val client = MinecraftClient.getInstance()
+        val entity = client.world?.getEntityById(entityId) ?: return
+        val typeId = Registries.ENTITY_TYPE.getId(entity.type).toString()
+        tracker.onEntityKilled(typeId)
+    }
+
+    /**
+     * Called when the player places a block.
+     * Used to track bed placement in the End.
+     */
+    fun onBlockPlaced(blockId: String) {
+        runTracker?.onBlockPlaced(blockId)
     }
 
     /**

@@ -1,5 +1,10 @@
 package dev.replaycraft.mcap.ml
 
+import dev.replaycraft.mcap.analytics.AnalyticsEmitter
+import dev.replaycraft.mcap.analytics.RunOutcome
+import dev.replaycraft.mcap.analytics.RunTracker
+import dev.replaycraft.mcap.auth.IodineAuthClient
+import dev.replaycraft.mcap.capture.RecordingEventHandler
 import net.minecraft.client.MinecraftClient
 import java.io.File
 import java.util.UUID
@@ -10,6 +15,10 @@ import java.util.UUID
  * Manages the lifecycle of gamestate.bin and gamestate_events.bin writers,
  * manifest.json, and S3 upload. Runs in parallel with the existing
  * packets.bin capture without modifying it.
+ *
+ * Authentication is handled by [IodineAuthClient] which performs a Minecraft
+ * session handshake with the iodine server and returns a JWT used for all
+ * server communication (analytics emission and file upload).
  */
 object MlSessionManager {
 
@@ -23,6 +32,10 @@ object MlSessionManager {
     private var tickCounter = 0
     private var wasSleeping = false
     private var wasAlive = true
+
+    // --- Analytics ---
+    private var runTracker: RunTracker? = null
+    private var endedByDeath = false
 
     /**
      * Attempt to start an ML capture session.
@@ -55,9 +68,32 @@ object MlSessionManager {
         gameStateWriter = GameStateWriter(File(baseDir, "gamestate.bin")).also { it.open() }
         gameStateEventWriter = GameStateEventWriter(File(baseDir, "gamestate_events.bin")).also { it.open() }
 
+        // Initialize analytics tracking
+        val playerId = client.session.uuidOrNull?.toString() ?: "unknown"
+        val modVersion = "0.1.0" // matches gradle.properties mod_version
+        val tracker = RunTracker(sessionId, playerId, modVersion)
+        runTracker = tracker
+        RecordingEventHandler.runTracker = tracker
+
+        // Try to load a cached iodine JWT from disk (fast, no I/O to server).
+        // Then kick off a background auth so the token is ready by session end.
+        IodineAuthClient.tryLoadCached(client)
+        Thread {
+            try {
+                IodineAuthClient.authenticate(client)
+            } catch (e: Exception) {
+                println("[Iodine Auth] Background auth failed: ${e.message}")
+            }
+        }.apply {
+            name = "Iodine-Auth-$sessionId"
+            isDaemon = true
+            start()
+        }
+
         tickCounter = 0
         wasSleeping = false
         wasAlive = true
+        endedByDeath = false
         active = true
 
         println("[MCAP ML] ML capture started — session $sessionId")
@@ -82,6 +118,7 @@ object MlSessionManager {
         val isAlive = player.isAlive
         if (wasAlive && !isAlive) {
             gameStateEventWriter?.writePlayerDied(tickCounter)
+            endedByDeath = true
         }
         wasAlive = isAlive
 
@@ -105,6 +142,31 @@ object MlSessionManager {
 
         println("[MCAP ML] Stopping ML capture — session $sessionId ($tickCounter ticks)")
 
+        // Use the cached iodine JWT (background auth in tryStart should have completed
+        // by now). If the token is not yet available, authenticate() returns instantly
+        // from the cache or returns null without blocking if the cache is empty.
+        val token = IodineAuthClient.getCachedToken()
+
+        if (token == null) {
+            println("[MCAP ML] No iodine JWT available — analytics and upload will be skipped")
+        }
+
+        // Build summary before clearing state
+        val tracker = runTracker
+        val summary = if (tracker != null) {
+            val dragonKilled = tracker.killTick >= 0
+            val outcome = when {
+                dragonKilled -> RunOutcome.WIN
+                endedByDeath -> RunOutcome.DEATH
+                else -> RunOutcome.QUIT
+            }
+            tracker.buildSummary(outcome)
+        } else null
+
+        // Clear analytics state
+        RecordingEventHandler.runTracker = null
+        runTracker = null
+
         // Close writers
         gameStateWriter?.close()
         gameStateWriter = null
@@ -115,8 +177,13 @@ object MlSessionManager {
         val dir = sessionDir ?: return
         MlManifest.writeComplete(dir, sessionId, client)
 
-        // Launch Python script to convert binary -> Parquet and upload to S3 (fire-and-forget)
-        S3Uploader.launchConvertAndUpload(dir, sessionId, client.runDirectory)
+        // Fire analytics and upload on background threads (non-blocking)
+        if (token != null && summary != null) {
+            AnalyticsEmitter(token).emit(summary)
+        }
+        if (token != null) {
+            S3Uploader.uploadViaAuth(dir, sessionId, client.runDirectory, token)
+        }
 
         sessionDir = null
     }
@@ -125,4 +192,6 @@ object MlSessionManager {
      * Whether an ML capture session is currently active.
      */
     fun isActive(): Boolean = active
+
+    fun getSessionId(): String = sessionId
 }
