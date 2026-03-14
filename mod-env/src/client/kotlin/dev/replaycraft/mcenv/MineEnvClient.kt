@@ -27,6 +27,12 @@ object MineEnvClient : ClientModInitializer {
         envServer.start()
 
         ClientTickEvents.END_CLIENT_TICK.register { client ->
+            // prevent singleplayer from pausing when window loses focus
+            if (AgentInputState.active && client.options.pauseOnLostFocus) {
+                client.options.pauseOnLostFocus = false
+                logger.info("Disabled pauseOnLostFocus for agent control")
+            }
+
             if (!AgentInputState.active) return@register
 
             val action = if (config.waitForAction) {
