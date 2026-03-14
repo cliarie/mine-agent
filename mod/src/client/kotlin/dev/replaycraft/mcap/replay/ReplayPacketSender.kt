@@ -86,6 +86,16 @@ class ReplayPacketSender(
         )
     }
 
+    // Diagnostic counters for debugging block update replay
+    var totalBlockUpdates = 0
+        private set
+    var totalChunkLoads = 0
+        private set
+    var totalWorldEvents = 0
+        private set
+    var totalDecodeErrors = 0
+        private set
+
     /**
      * Process decoded packets flowing through the pipeline.
      * The DecoderHandler upstream has already converted raw ByteBuf -> Packet<?>.
@@ -161,6 +171,10 @@ class ReplayPacketSender(
 
         val nativeBuf = ByteBuffer.wrap(packetsData).order(ByteOrder.LITTLE_ENDIAN)
         var count = 0
+        var blockUpdateCount = 0
+        var chunkLoadCount = 0
+        var worldEventCount = 0
+        var decodeErrors = 0
 
         // Get the context for firing decoded packets - fire from the bundler context
         // so packets go through: PacketBundler -> ReplayPacketSender -> ClientConnection
@@ -203,12 +217,36 @@ class ReplayPacketSender(
                     // This goes through: PacketBundler -> ReplayPacketSender -> ClientConnection
                     bundlerCtx.fireChannelRead(packet)
                     count++
+
+                    // Diagnostic: track packet types for replay debugging
+                    when (packet) {
+                        is BlockUpdateS2CPacket -> blockUpdateCount++
+                        is ChunkDeltaUpdateS2CPacket -> blockUpdateCount++
+                        is ChunkDataS2CPacket -> chunkLoadCount++
+                        is WorldEventS2CPacket -> worldEventCount++
+                    }
                 }
             } catch (e: Exception) {
                 // Skip packets that fail to decode - errors are isolated per-packet
                 // (no cumulation corruption since we don't use ByteToMessageDecoder)
                 packetByteBuf?.release()
+                decodeErrors++
+                // Log the first few decode errors with packet ID for diagnosis
+                if (totalDecodeErrors + decodeErrors <= 10) {
+                    println("[MCAP] Replay decode error: packetId=$packetId, dataLen=$dataLen, error=${e.javaClass.simpleName}: ${e.message}")
+                }
             }
+        }
+
+        // Accumulate stats
+        totalBlockUpdates += blockUpdateCount
+        totalChunkLoads += chunkLoadCount
+        totalWorldEvents += worldEventCount
+        totalDecodeErrors += decodeErrors
+
+        // Log replay stats every 200 ticks
+        if (tick % 200 == 0 && tick > 0) {
+            println("[MCAP] Replay stats @ tick $tick: packets=$count, blockUpdates=$totalBlockUpdates, chunkLoads=$totalChunkLoads, worldEvents=$totalWorldEvents, decodeErrors=$totalDecodeErrors")
         }
 
         return count

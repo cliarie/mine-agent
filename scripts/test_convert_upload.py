@@ -3,7 +3,7 @@
 Tests for convert_upload.py
 
 Validates:
-    1. gamestate.bin binary parsing (fixed 64-byte big-endian records)
+    1. gamestate.bin binary parsing (fixed 68-byte big-endian records)
     2. gamestate_events.bin binary parsing (variable-length records)
     3. Parquet file generation with correct schema and values
     4. S3 upload invocation (mocked)
@@ -49,11 +49,14 @@ def write_gamestate_record(
     key_mask: int = 0b0000101,  # forward + left
     yaw_delta: float = 1.5,
     pitch_delta: float = -0.3,
+    dimension: int = 0,
+    player_pose: int = 0,
+    _padding: int = 0,
 ) -> bytes:
-    """Write a single 64-byte gamestate record in big-endian format,
+    """Write a single 68-byte gamestate record in big-endian format,
     matching GameStateWriter.kt writeTick() exactly."""
     return struct.pack(
-        ">iqffffffiihbbiiff",
+        ">iqffffffiihbbiiffbbh",
         tick,
         timestamp_ms,
         player_x,
@@ -71,6 +74,9 @@ def write_gamestate_record(
         key_mask,
         yaw_delta,
         pitch_delta,
+        dimension,
+        player_pose,
+        _padding,
     )
 
 
@@ -95,16 +101,16 @@ def write_event_record(
 # ---------------------------------------------------------------------------
 
 class TestRecordSize:
-    def test_gamestate_record_is_64_bytes(self):
+    def test_gamestate_record_is_68_bytes(self):
         record = write_gamestate_record()
-        assert len(record) == 64
+        assert len(record) == 68
 
-    def test_struct_format_size_is_64(self):
-        assert struct.calcsize(convert_upload.TICK_RECORD_FORMAT) == 64
+    def test_struct_format_size_is_68(self):
+        assert struct.calcsize(convert_upload.TICK_RECORD_FORMAT) == 68
 
     def test_tick_columns_count_matches_format(self):
         """Number of columns must match number of fields in struct format."""
-        n_fields = len(struct.unpack(convert_upload.TICK_RECORD_FORMAT, b"\x00" * 64))
+        n_fields = len(struct.unpack(convert_upload.TICK_RECORD_FORMAT, b"\x00" * 68))
         assert len(convert_upload.TICK_COLUMNS) == n_fields
 
 
@@ -512,10 +518,10 @@ class TestFormatKotlinAlignment:
     """Verify the Python struct format produces the same bytes as Java DataOutputStream."""
 
     def test_format_field_count(self):
-        """17 fields in format must match 17 column names."""
-        unpacked = struct.unpack(convert_upload.TICK_RECORD_FORMAT, b"\x00" * 64)
-        assert len(unpacked) == 17
-        assert len(convert_upload.TICK_COLUMNS) == 17
+        """20 fields in format must match 20 column names."""
+        unpacked = struct.unpack(convert_upload.TICK_RECORD_FORMAT, b"\x00" * 68)
+        assert len(unpacked) == 20
+        assert len(convert_upload.TICK_COLUMNS) == 20
 
     def test_known_values_roundtrip(self):
         """Pack known values, unpack, and verify they come back correctly."""
@@ -537,9 +543,12 @@ class TestFormatKotlinAlignment:
             0b0000101, # key_mask: i
             1.5,       # yaw_delta: f
             -0.3,      # pitch_delta: f
+            0,         # dimension: b
+            0,         # player_pose: b
+            0,         # _padding: h
         )
         packed = struct.pack(convert_upload.TICK_RECORD_FORMAT, *values)
-        assert len(packed) == 64
+        assert len(packed) == 68
 
         unpacked = struct.unpack(convert_upload.TICK_RECORD_FORMAT, packed)
         assert unpacked[0] == 42        # tick
@@ -550,12 +559,14 @@ class TestFormatKotlinAlignment:
         assert unpacked[10] == 4        # biome_id
         assert unpacked[11] == 12       # light_level
         assert unpacked[12] == 1        # is_raining
+        assert unpacked[17] == 0        # dimension
+        assert unpacked[18] == 0        # player_pose
 
     def test_hunger_xp_are_integers_in_struct(self):
         """Explicitly verify hunger and xp fields use 'i' (int) format."""
         fmt = convert_upload.TICK_RECORD_FORMAT
-        # The format is: >iqffffffiihbbiiff
-        # Positions after '>': i q f f f f f f i i h b b i i f f
+        # The format is: >iqffffffiihbbiiffbbh
+        # Positions after '>': i q f f f f f f i i h b b i i f f b b h
         # hunger is the 9th field (index 8), xp is the 10th (index 9)
         # Both should be decoded as int
         data = write_gamestate_record(hunger=20, xp=30)

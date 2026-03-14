@@ -72,6 +72,12 @@ class TickRingBuffer(val capacity: Int) {
         if (player.isOnGround) flags = flags or (1 shl 11)
         // Bit 12: player in water
         if (player.isTouchingWater) flags = flags or (1 shl 12)
+        // Bit 13: player swimming (full swim pose)
+        if (player.isSwimming) flags = flags or (1 shl 13)
+        // Bit 14: player crawling (swimming pose without water — 1-block gap)
+        if (player.isInSwimmingPose && !player.isSwimming) flags = flags or (1 shl 14)
+        // Bit 15: player elytra gliding
+        if (player.isFallFlying) flags = flags or (1 shl 15)
 
         val hotbar = player.inventory.selectedSlot
 

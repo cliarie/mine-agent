@@ -11,7 +11,9 @@ import java.io.File
  *
  * Currently tracks inventory changes. Each record:
  *   tick:           Int32  (4)
- *   event_type:     Int8   (1)   0=INVENTORY_DELTA, 1=CRAFTED, 2=PLAYER_DIED, 3=SLEPT
+ *   event_type:     Int8   (1)   0=INVENTORY_DELTA, 1=CRAFTED, 2=PLAYER_DIED, 3=SLEPT,
+ *                                4=DIMENSION_CHANGE, 5=DRAGON_HEALTH, 6=EQUIPMENT_CHANGE,
+ *                                7=ADVANCEMENT
  *   item_name_len:  Int8   (1)
  *   item_name:      UTF-8 bytes (variable)
  *   count:          Int16  (2)   current count (0 if removed)
@@ -24,6 +26,10 @@ class GameStateEventWriter(private val outputFile: File) {
         const val EVENT_CRAFTED: Byte = 1
         const val EVENT_PLAYER_DIED: Byte = 2
         const val EVENT_SLEPT: Byte = 3
+        const val EVENT_DIMENSION_CHANGE: Byte = 4
+        const val EVENT_DRAGON_HEALTH: Byte = 5
+        const val EVENT_EQUIPMENT_CHANGE: Byte = 6
+        const val EVENT_ADVANCEMENT: Byte = 7
     }
 
     private var stream: DataOutputStream? = null
@@ -95,6 +101,82 @@ class GameStateEventWriter(private val outputFile: File) {
         out.writeByte(EVENT_SLEPT.toInt())
         out.writeByte(nameBytes.size)
         out.write(nameBytes)
+        out.writeShort(0)
+        out.writeShort(0)
+    }
+
+    /**
+     * Write a CRAFTED event when the player crafts an item.
+     */
+    fun writeCrafted(tick: Int, itemName: String, count: Int) {
+        val out = stream ?: return
+        val nameBytes = itemName.toByteArray(Charsets.UTF_8)
+        val nameLen = nameBytes.size.coerceAtMost(255)
+        out.writeInt(tick)
+        out.writeByte(EVENT_CRAFTED.toInt())
+        out.writeByte(nameLen)
+        out.write(nameBytes, 0, nameLen)
+        out.writeShort(count)
+        out.writeShort(0)
+    }
+
+    /**
+     * Write a DIMENSION_CHANGE event.
+     */
+    fun writeDimensionChange(tick: Int, dimensionId: String) {
+        val out = stream ?: return
+        val nameBytes = dimensionId.toByteArray(Charsets.UTF_8)
+        val nameLen = nameBytes.size.coerceAtMost(255)
+        out.writeInt(tick)
+        out.writeByte(EVENT_DIMENSION_CHANGE.toInt())
+        out.writeByte(nameLen)
+        out.write(nameBytes, 0, nameLen)
+        out.writeShort(0)
+        out.writeShort(0)
+    }
+
+    /**
+     * Write a DRAGON_HEALTH event (health as fixed-point in count field).
+     */
+    fun writeDragonHealth(tick: Int, healthPercent: Float) {
+        val out = stream ?: return
+        val nameBytes = "ender_dragon".toByteArray(Charsets.UTF_8)
+        out.writeInt(tick)
+        out.writeByte(EVENT_DRAGON_HEALTH.toInt())
+        out.writeByte(nameBytes.size)
+        out.write(nameBytes)
+        out.writeShort((healthPercent * 100).toInt().coerceIn(0, 10000))
+        out.writeShort(0)
+    }
+
+    /**
+     * Write an EQUIPMENT_CHANGE event for a slot change.
+     * slot: 0=mainhand, 1=offhand, 2=boots, 3=leggings, 4=chestplate, 5=helmet
+     */
+    fun writeEquipmentChange(tick: Int, slotName: String, itemName: String, enchanted: Boolean) {
+        val out = stream ?: return
+        val fullName = "$slotName:$itemName${if (enchanted) ":ench" else ""}"
+        val nameBytes = fullName.toByteArray(Charsets.UTF_8)
+        val nameLen = nameBytes.size.coerceAtMost(255)
+        out.writeInt(tick)
+        out.writeByte(EVENT_EQUIPMENT_CHANGE.toInt())
+        out.writeByte(nameLen)
+        out.write(nameBytes, 0, nameLen)
+        out.writeShort(1)
+        out.writeShort(0)
+    }
+
+    /**
+     * Write an ADVANCEMENT event.
+     */
+    fun writeAdvancement(tick: Int, advancementId: String) {
+        val out = stream ?: return
+        val nameBytes = advancementId.toByteArray(Charsets.UTF_8)
+        val nameLen = nameBytes.size.coerceAtMost(255)
+        out.writeInt(tick)
+        out.writeByte(EVENT_ADVANCEMENT.toInt())
+        out.writeByte(nameLen)
+        out.write(nameBytes, 0, nameLen)
         out.writeShort(0)
         out.writeShort(0)
     }

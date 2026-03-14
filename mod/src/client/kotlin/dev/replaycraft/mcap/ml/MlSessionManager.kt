@@ -6,6 +6,9 @@ import dev.replaycraft.mcap.analytics.RunTracker
 import dev.replaycraft.mcap.auth.IodineAuthClient
 import dev.replaycraft.mcap.capture.RecordingEventHandler
 import net.minecraft.client.MinecraftClient
+import net.minecraft.entity.EquipmentSlot
+import net.minecraft.item.ItemStack
+import net.minecraft.registry.Registries
 import java.io.File
 import java.util.UUID
 
@@ -32,6 +35,15 @@ object MlSessionManager {
     private var tickCounter = 0
     private var wasSleeping = false
     private var wasAlive = true
+
+    // --- Equipment tracking ---
+    private val trackedEquipment = Array<ItemStack>(EquipmentSlot.values().size) { ItemStack.EMPTY }
+
+    // --- Dimension tracking ---
+    private var lastDimension: String? = null
+
+    // --- Dragon health tracking ---
+    private var lastDragonHealthPercent = -1f
 
     // --- Analytics ---
     private var runTracker: RunTracker? = null
@@ -94,6 +106,9 @@ object MlSessionManager {
         wasSleeping = false
         wasAlive = true
         endedByDeath = false
+        trackedEquipment.fill(ItemStack.EMPTY)
+        lastDimension = null
+        lastDragonHealthPercent = -1f
         active = true
 
         println("[MCAP ML] ML capture started — session $sessionId")
@@ -107,6 +122,7 @@ object MlSessionManager {
         if (!active) return
 
         val player = client.player ?: return
+        val world = client.world
 
         // Write fixed-size game state record
         gameStateWriter?.writeTick(client, player, tickCounter)
@@ -128,6 +144,57 @@ object MlSessionManager {
             gameStateEventWriter?.writeSlept(tickCounter)
         }
         wasSleeping = isSleeping
+
+        // Detect dimension changes
+        val dimKey = world?.registryKey?.value?.toString()
+        if (dimKey != null && dimKey != lastDimension) {
+            if (lastDimension != null) {
+                gameStateEventWriter?.writeDimensionChange(tickCounter, dimKey)
+            }
+            lastDimension = dimKey
+        }
+
+        // Track equipment changes (armor + held items)
+        for (slot in EquipmentSlot.values()) {
+            val current = player.getEquippedStack(slot)
+            val idx = slot.ordinal
+            if (!ItemStack.areEqual(trackedEquipment[idx], current)) {
+                trackedEquipment[idx] = if (current.isEmpty) ItemStack.EMPTY else current.copy()
+                val itemName = if (current.isEmpty) "empty" else Registries.ITEM.getId(current.item).path
+                val enchanted = current.hasEnchantments()
+                gameStateEventWriter?.writeEquipmentChange(tickCounter, slot.name.lowercase(), itemName, enchanted)
+            }
+        }
+
+        // Track ender dragon health in the End
+        if (world != null) {
+            // Use boss bar to track dragon health (server sends BossBarS2CPacket)
+            try {
+                val bossBarHud = client.inGameHud?.bossBarHud
+                if (bossBarHud != null) {
+                    val barsField = bossBarHud.javaClass.getDeclaredField("bossBars")
+                    barsField.isAccessible = true
+                    @Suppress("UNCHECKED_CAST")
+                    val bars = barsField.get(bossBarHud) as? Map<*, *>
+                    if (bars != null) {
+                        for ((_, bar) in bars) {
+                            if (bar is net.minecraft.entity.boss.BossBar) {
+                                val name = bar.name?.string ?: ""
+                                if (name.contains("Ender Dragon", ignoreCase = true)) {
+                                    val healthPct = bar.percent
+                                    if (healthPct != lastDragonHealthPercent) {
+                                        gameStateEventWriter?.writeDragonHealth(tickCounter, healthPct)
+                                        lastDragonHealthPercent = healthPct
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Reflection may fail — skip dragon health tracking
+            }
+        }
 
         tickCounter++
     }
@@ -194,4 +261,22 @@ object MlSessionManager {
     fun isActive(): Boolean = active
 
     fun getSessionId(): String = sessionId
+
+    fun getTickCounter(): Int = tickCounter
+
+    /**
+     * Write a CRAFTED event to the event stream.
+     */
+    fun onCrafted(itemName: String, count: Int) {
+        if (!active) return
+        gameStateEventWriter?.writeCrafted(tickCounter, itemName, count)
+    }
+
+    /**
+     * Write an ADVANCEMENT event to the event stream.
+     */
+    fun onAdvancement(advancementId: String) {
+        if (!active) return
+        gameStateEventWriter?.writeAdvancement(tickCounter, advancementId)
+    }
 }

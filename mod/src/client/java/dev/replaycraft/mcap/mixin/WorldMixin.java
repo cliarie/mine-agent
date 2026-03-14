@@ -8,17 +8,14 @@ import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.sound.SoundCategory;
 import net.minecraft.sound.SoundEvent;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.block.BlockState;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import org.jetbrains.annotations.Nullable;
 
 /**
  * Mixin on ClientWorld:
- * - Freezes world time during replay
  * - Captures syncWorldEvent (block break particles, sounds) for the local player
  *   during recording (matching ReplayMod's MixinWorldClient)
  * - Captures playSound for the local player during recording
@@ -30,12 +27,16 @@ import org.jetbrains.annotations.Nullable;
 @Mixin(ClientWorld.class)
 public class WorldMixin {
 
-    @Inject(method = "setTimeOfDay", at = @At("HEAD"), cancellable = true)
-    private void mcap_onSetTimeOfDay(long time, CallbackInfo ci) {
-        if (ReplayState.INSTANCE.isReplayActive()) {
-            ci.cancel();
-        }
-    }
+    /**
+     * During replay, allow time-of-day updates from captured WorldTimeUpdateS2CPacket
+     * packets (they flow through the normal packet pipeline). We no longer freeze time
+     * because the replay handler dispatches the original server's time packets, giving
+     * faithful day/night cycle rendering.
+     *
+     * Note: This was previously cancelling ALL setTimeOfDay calls during replay,
+     * which also blocked the WorldTimeUpdateS2CPacket handler from setting time.
+     */
+    // Time freeze removed — WorldTimeUpdateS2CPacket packets now drive time during replay.
 
     /**
      * Capture syncWorldEvent calls for the local player.
