@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "mine_env",
+  "version": "${version}",
+  "name": "mine-env",
+  "description": "Agent environment WebSocket interface for mine-agent",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      {
+        "adapter": "kotlin",
+        "value": "dev.replaycraft.mcenv.MineEnvClient"
+      }
+    ]
+  },
+  "mixins": [
+    "mine_env.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.14.0",
+    "fabric-api": "*",
+    "minecraft": "1.20.1",
+    "fabric-language-kotlin": "*"
+  }
+}
