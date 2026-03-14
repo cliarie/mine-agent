@@ -4,6 +4,7 @@
   "package": "dev.replaycraft.mcap.mixin",
   "compatibilityLevel": "JAVA_17",
   "client": [
+    "AdvancementMixin",
     "ClientConnectionAccessor",
     "EntityPrevAnglesAccessor",
     "MinecraftClientAccessor",

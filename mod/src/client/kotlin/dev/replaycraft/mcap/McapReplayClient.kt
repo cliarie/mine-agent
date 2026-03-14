@@ -116,8 +116,8 @@ object McapReplayClient : ClientModInitializer {
                     val rc = tracker.resourceCounter
                     println("[MCAP Analytics Debug] session=${MlSessionManager.getSessionId()}")
                     println("  phase=$phase  overworld=${tracker.phaseTimer.getOverworldTicks()}  nether=${tracker.phaseTimer.getNetherTicks()}  end=${tracker.phaseTimer.getEndTicks()}")
-                    println("  blazeRods=${rc.blazeRodsUsed}  pearls=${rc.pearlsUsed}  beds=${rc.bedsPlaced}  deaths=${rc.deaths}  gold=${rc.goldTraded}")
-                    println("  portalBuild=${tracker.portalBuildTick}  fortress=${tracker.fortressEnterTick}  stronghold=${tracker.strongholdEnterTick}  dragonEnter=${tracker.dragonEnterTick}  kill=${tracker.killTick}")
+                    println("  blazeRods=${rc.blazeRodsUsed}  blazeKills=${rc.blazeKills}  pearls=${rc.pearlsUsed}  beds=${rc.bedsPlaced}  deaths=${rc.deaths}  gold=${rc.goldTraded}")
+                    println("  portalBuild=${tracker.portalBuildTick}  bastion=${tracker.bastionEnterTick}  fortress=${tracker.fortressEnterTick}  blind=${tracker.blindTravelTick}  stronghold=${tracker.strongholdEnterTick}  eyeSpy=${tracker.eyeSpyTick}  dragonEnter=${tracker.dragonEnterTick}  kill=${tracker.killTick}")
                 } ?: println("[MCAP Analytics Debug] No active RunTracker")
             }
             lastF8KeyState = f8Down

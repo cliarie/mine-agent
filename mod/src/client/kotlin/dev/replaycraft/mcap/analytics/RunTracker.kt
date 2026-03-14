@@ -15,7 +15,10 @@ class RunTracker(
 
     var portalBuildTick = -1L
     var fortressEnterTick = -1L
+    var bastionEnterTick = -1L
     var strongholdEnterTick = -1L
+    var blindTravelTick = -1L
+    var eyeSpyTick = -1L
     var dragonEnterTick = -1L
     var killTick = -1L
 
@@ -32,6 +35,19 @@ class RunTracker(
             dragonEnterTick = totalTicks
     }
 
+    fun onAdvancement(advancementId: String) {
+        when (advancementId) {
+            "minecraft:nether/find_bastion" ->
+                if (bastionEnterTick == -1L) bastionEnterTick = totalTicks
+            "minecraft:nether/find_fortress" ->
+                if (fortressEnterTick == -1L) fortressEnterTick = totalTicks
+            "minecraft:story/follow_ender_eye" ->
+                if (eyeSpyTick == -1L) eyeSpyTick = totalTicks
+            "minecraft:nether/fast_travel" ->
+                if (blindTravelTick == -1L) blindTravelTick = totalTicks
+        }
+    }
+
     fun onInventoryDelta(itemId: String, delta: Int) =
         resourceCounter.onInventoryDelta(itemId, delta, phaseTimer.getCurrentPhase())
 
@@ -39,6 +55,7 @@ class RunTracker(
 
     fun onEntityKilled(entityType: String) {
         if (entityType == "minecraft:ender_dragon") killTick = totalTicks
+        if (entityType == "minecraft:blaze") resourceCounter.onBlazeKill()
     }
 
     fun onBlockPlaced(blockId: String) =
@@ -73,11 +90,15 @@ class RunTracker(
             endTicks = phaseTimer.getEndTicks(),
             portalBuildTick = portalBuildTick,
             fortressEnterTick = fortressEnterTick,
+            bastionEnterTick = bastionEnterTick,
             strongholdEnterTick = strongholdEnterTick,
+            blindTravelTick = blindTravelTick,
+            eyeSpyTick = eyeSpyTick,
             dragonEnterTick = dragonEnterTick,
             killTick = killTick,
             blazeRodsUsed = rc.blazeRodsUsed,
             blazeRodsCollected = rc.blazeRodsCollected,
+            blazeKills = rc.blazeKills,
             pearlsUsed = rc.pearlsUsed,
             bedsUsed = rc.bedsPlaced,
             goldTraded = rc.goldTraded,

@@ -66,9 +66,27 @@ object MlManifest {
 
     @Suppress("UNUSED_PARAMETER")
     private fun getSeedSafe(world: ClientWorld): Long {
-        // ClientWorld doesn't expose seed on the client side.
-        // The server sends it via GameJoinS2CPacket but ClientWorld.Properties
-        // doesn't store it in a public accessor. Return 0 as safe fallback.
+        // In singleplayer, the integrated server exposes the seed.
+        // In multiplayer, the server sends a hashed seed via GameJoinS2CPacket
+        // which is stored in ClientWorld.Properties.
+        try {
+            val props = world.levelProperties
+            if (props != null) {
+                // ClientWorld.Properties stores the hashed seed from GameJoinS2CPacket
+                val field = props.javaClass.getDeclaredField("seed")
+                field.isAccessible = true
+                return field.getLong(props)
+            }
+        } catch (_: Exception) {}
+
+        // Fallback: try integrated server seed
+        try {
+            val server = net.minecraft.client.MinecraftClient.getInstance().server
+            if (server != null) {
+                return server.overworld.seed
+            }
+        } catch (_: Exception) {}
+
         return 0L
     }
 

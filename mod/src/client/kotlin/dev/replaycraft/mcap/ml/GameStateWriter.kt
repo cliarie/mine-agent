@@ -10,7 +10,7 @@ import java.io.File
 /**
  * Writes fixed-size binary records to gamestate.bin, one per tick.
  *
- * Record layout (big-endian, 64 bytes):
+ * Record layout (big-endian, 68 bytes):
  *   tick:          Int32   (4)   offset 0
  *   timestamp_ms:  Int64   (8)   offset 4
  *   player_x:      Float32 (4)   offset 12
@@ -28,13 +28,16 @@ import java.io.File
  *   key_mask:      Int32   (4)   offset 52
  *   yaw_delta:     Float32 (4)   offset 56
  *   pitch_delta:   Float32 (4)   offset 60
+ *   dimension:     Int8    (1)   offset 64   0=overworld, 1=nether, 2=end, -1=unknown
+ *   player_pose:   Int8    (1)   offset 65   0=standing, 1=sneaking, 2=swimming, 3=crawling, 4=sleeping, 5=elytra
+ *   _padding:      Int16   (2)   offset 66   reserved (zero)
  *
- * Total: 64 bytes per record.
+ * Total: 68 bytes per record.
  */
 class GameStateWriter(private val outputFile: File) {
 
     companion object {
-        const val RECORD_SIZE = 64
+        const val RECORD_SIZE = 68
         private const val FLUSH_INTERVAL_TICKS = 1000
     }
 
@@ -105,7 +108,26 @@ class GameStateWriter(private val outputFile: File) {
         val hunger = player.hungerManager.foodLevel
         val xp = player.experienceLevel
 
-        // Write the 64-byte record
+        // Dimension: 0=overworld, 1=nether, 2=end, -1=unknown
+        val dimKey = world.registryKey?.value?.toString() ?: ""
+        val dimension: Byte = when (dimKey) {
+            "minecraft:overworld" -> 0
+            "minecraft:the_nether" -> 1
+            "minecraft:the_end" -> 2
+            else -> -1
+        }
+
+        // Player pose: 0=standing, 1=sneaking, 2=swimming, 3=crawling, 4=sleeping, 5=elytra
+        val pose: Byte = when {
+            player.isFallFlying -> 5
+            player.isSleeping -> 4
+            player.isSwimming -> 2
+            player.isInSwimmingPose -> 3  // crawling (1-block gap)
+            player.isSneaking -> 1
+            else -> 0
+        }
+
+        // Write the 68-byte record
         out.writeInt(tick)                          // 4 bytes  (offset 0)
         out.writeLong(timestampMs)                  // 8 bytes  (offset 4)
         out.writeFloat(player.x.toFloat())          // 4 bytes  (offset 12)
@@ -123,6 +145,9 @@ class GameStateWriter(private val outputFile: File) {
         out.writeInt(keyMask)                       // 4 bytes  (offset 52)
         out.writeFloat(yawDelta)                    // 4 bytes  (offset 56)
         out.writeFloat(pitchDelta)                  // 4 bytes  (offset 60)
+        out.writeByte(dimension.toInt())            // 1 byte   (offset 64)
+        out.writeByte(pose.toInt())                 // 1 byte   (offset 65)
+        out.writeShort(0)                           // 2 bytes  (offset 66) padding
 
         tickCount++
 

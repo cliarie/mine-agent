@@ -4,7 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 
 /**
- * Standalone verification that the gamestate.bin record layout is exactly 64 bytes.
+ * Standalone verification that the gamestate.bin record layout is exactly 68 bytes.
  * This does not depend on Minecraft classes — it writes dummy values using the same
  * DataOutputStream sequence as GameStateWriter.writeTick() and checks the output size.
  *
@@ -33,11 +33,14 @@ fun main() {
     out.writeInt(0)             // key_mask:     Int32   (4)
     out.writeFloat(0.0f)       // yaw_delta:    Float32 (4)
     out.writeFloat(0.0f)       // pitch_delta:  Float32 (4)
+    out.writeByte(0)            // dimension:    Int8    (1)
+    out.writeByte(0)            // player_pose:  Int8    (1)
+    out.writeShort(0)           // _padding:     Int16   (2)
 
     out.flush()
     val size = baos.size()
 
     println("Record size: $size bytes")
-    assert(size == 64) { "Expected 64 bytes but got $size" }
-    println("PASS: gamestate.bin record is exactly 64 bytes")
+    assert(size == 68) { "Expected 68 bytes but got $size" }
+    println("PASS: gamestate.bin record is exactly 68 bytes")
 }

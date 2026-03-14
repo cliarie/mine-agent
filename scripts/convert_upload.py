@@ -9,7 +9,7 @@ Usage:
     python3 scripts/convert_upload.py --convert-only <session_dir> <session_id>
 
 Steps:
-    1. Read gamestate.bin (fixed 64-byte big-endian records) -> polars DataFrame
+    1. Read gamestate.bin (fixed 68-byte big-endian records) -> polars DataFrame
     2. Read gamestate_events.bin (variable-length records) -> polars DataFrame
     3. Write tick_stream.parquet and events.parquet
     4. Upload tick_stream.parquet, events.parquet, manifest.json to S3 (skipped with --convert-only)
@@ -29,11 +29,11 @@ except ImportError:
     sys.exit(1)
 
 
-# gamestate.bin record layout (big-endian, 64 bytes per record)
+# gamestate.bin record layout (big-endian, 68 bytes per record)
 # See GameStateWriter.kt for authoritative field order
-TICK_RECORD_FORMAT = ">iqffffffiihbbiiff"
+TICK_RECORD_FORMAT = ">iqffffffiihbbiiffbbh"
 TICK_RECORD_SIZE = struct.calcsize(TICK_RECORD_FORMAT)
-assert TICK_RECORD_SIZE == 64, f"Expected 64 bytes, got {TICK_RECORD_SIZE}"
+assert TICK_RECORD_SIZE == 68, f"Expected 68 bytes, got {TICK_RECORD_SIZE}"
 
 TICK_COLUMNS = [
     "tick",           # i  Int32
@@ -53,6 +53,9 @@ TICK_COLUMNS = [
     "key_mask",       # i  Int32
     "yaw_delta",      # f  Float32
     "pitch_delta",    # f  Float32
+    "dimension",      # b  Int8
+    "player_pose",    # b  Int8
+    "_padding",       # h  Int16
 ]
 
 # gamestate_events.bin record layout (variable-length)

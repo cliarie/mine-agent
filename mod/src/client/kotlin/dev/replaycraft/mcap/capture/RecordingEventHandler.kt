@@ -617,6 +617,14 @@ object RecordingEventHandler {
     }
 
     /**
+     * Called from AdvancementMixin when a speedrun-relevant advancement is granted.
+     * Routes to RunTracker for split milestone detection.
+     */
+    fun onAdvancement(advancementId: String) {
+        runTracker?.onAdvancement(advancementId)
+    }
+
+    /**
      * Inject a synthetic packet into the RawPacketCapture queue.
      * Serializes the packet to bytes and stores it with the current tick/timestamp.
      */
