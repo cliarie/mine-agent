@@ -1,21 +1,25 @@
 package dev.replaycraft.mcap.analytics
 
+import dev.replaycraft.mcap.auth.IodineAuthClient
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 
+/**
+ * Posts a [RunSummary] to the iodine server, authenticated with a JWT
+ * obtained from [IodineAuthClient].
+ */
 class AnalyticsEmitter(
-    private val endpoint: String,
-    private val apiKey: String
+    private val jwtToken: String
 ) {
     private val client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .build()
 
     fun emit(summary: RunSummary) {
-        if (endpoint.isBlank() || apiKey.isBlank()) return
+        if (jwtToken.isBlank()) return
         Thread {
             doPost(summary, attempt = 1)
         }.apply {
@@ -28,13 +32,13 @@ class AnalyticsEmitter(
     private fun doPost(summary: RunSummary, attempt: Int) {
         try {
             val body = summary.toJson()
-            println("[MCAP Analytics] Analytics emit: run=${summary.runId} outcome=${summary.outcome} ticks=${summary.durationTicks} attempt=$attempt endpoint=$endpoint")
+            val endpoint = "${IodineAuthClient.serverUrl()}/minecraft/analytics"
+            println("[MCAP Analytics] Analytics emit: run=${summary.runId} outcome=${summary.outcome} ticks=${summary.durationTicks} attempt=$attempt")
             val request = HttpRequest.newBuilder()
                 .uri(URI.create(endpoint))
                 .timeout(Duration.ofSeconds(10))
                 .header("Content-Type", "application/json")
-                .header("apikey", apiKey)
-                .header("Authorization", "Bearer $apiKey")
+                .header("Authorization", "Bearer $jwtToken")
                 .header("X-Mod-Version", summary.modVersion)
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build()

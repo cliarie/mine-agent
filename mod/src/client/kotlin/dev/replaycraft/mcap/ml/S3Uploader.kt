@@ -1,74 +1,48 @@
 package dev.replaycraft.mcap.ml
 
-import com.mojang.authlib.GameProfile
-import com.mojang.authlib.minecraft.MinecraftSessionService
-import net.minecraft.client.MinecraftClient
+import dev.replaycraft.mcap.auth.IodineAuthClient
 import java.io.File
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URI
-import java.security.SecureRandom
-import java.util.UUID
 
 /**
- * Converts binary ML session files to Parquet and uploads to S3 via mine-auth presigned URLs.
+ * Converts binary ML session files to Parquet and uploads to S3 via the
+ * iodine server, authenticated with a JWT from [IodineAuthClient].
  *
  * Flow:
  *   1. Run convert_upload.py --convert-only to convert .bin files to .parquet
- *   2. Generate a random serverId (hex string)
- *   3. Call Minecraft's joinServer(serverId) to register session with Mojang
- *   4. POST to mine-auth /auth/begin with username, server_id, player_uuid, session_id
- *   5. Receive presigned S3 PUT URLs for tick_stream.parquet, events.parquet, manifest.json
- *   6. Upload each file via HTTP PUT to its presigned URL
+ *   2. POST to iodine /minecraft/upload with JWT auth and session_id
+ *   3. Receive presigned S3 PUT URLs for tick_stream.parquet, events.parquet, manifest.json
+ *   4. Upload each file via HTTP PUT to its presigned URL
  *
  * If conversion fails, the upload is skipped entirely (no partial sessions).
- *
- * mine-auth URL is read from config file at <runDir>/mcap_ml_config.properties:
- *   mine_auth.url=http://localhost:8080
- *
- * Or from the MINE_AUTH_URL environment variable.
  *
  * The conversion and upload run on a background thread so they do not block the game thread.
  * Requires Python 3 + polars on the player's machine.
  */
 object S3Uploader {
 
-    private val secureRandom = SecureRandom()
-
     /**
-     * Convert and upload session files to S3 via mine-auth presigned URLs (fire-and-forget).
+     * Convert and upload session files to S3 via iodine-authenticated presigned URLs (fire-and-forget).
      *
      * @param sessionDir directory containing the binary ML session files
      * @param sessionId UUID of the session
-     * @param runDir Minecraft run directory (for config file lookup and script path resolution)
-     * @param client MinecraftClient for Mojang session authentication
+     * @param runDir Minecraft run directory (for script path resolution)
+     * @param jwtToken iodine JWT token for authentication
      */
-    fun uploadViaAuth(sessionDir: File, sessionId: String, runDir: File, client: MinecraftClient) {
-        val authUrl = loadAuthUrl(runDir)
-        if (authUrl == null) {
-            println("[MCAP ML] S3 upload skipped: mine-auth URL not configured")
-            println("[MCAP ML] Set MINE_AUTH_URL env var, or add mine_auth.url to mcap_ml_config.properties")
+    fun uploadViaAuth(sessionDir: File, sessionId: String, runDir: File, jwtToken: String) {
+        if (jwtToken.isBlank()) {
+            println("[MCAP ML] S3 upload skipped: no iodine JWT available")
             return
         }
-
-        // Capture all session values on the main thread (MinecraftClient is not thread-safe)
-        val session = client.session
-        val username = session.username
-        val playerUuidObj = session.uuidOrNull
-        if (playerUuidObj == null) {
-            println("[MCAP ML] S3 upload skipped: player UUID not available")
-            return
-        }
-        val playerUuid = playerUuidObj.toString()
-        val accessToken = session.accessToken
-        val sessionService = client.sessionService
 
         println("[MCAP ML] Starting convert and upload for session $sessionId")
 
         // Run on background thread to avoid blocking the game thread
         Thread {
             try {
-                doConvertAndUpload(authUrl, username, playerUuid, playerUuidObj, accessToken, sessionService, sessionId, sessionDir, runDir)
+                doConvertAndUpload(jwtToken, sessionId, sessionDir, runDir)
             } catch (e: Exception) {
                 println("[MCAP ML] Upload failed: ${e.message}")
             }
@@ -80,12 +54,7 @@ object S3Uploader {
     }
 
     private fun doConvertAndUpload(
-        authUrl: String,
-        username: String,
-        playerUuid: String,
-        playerUuidObj: UUID,
-        accessToken: String,
-        sessionService: MinecraftSessionService,
+        jwtToken: String,
         sessionId: String,
         sessionDir: File,
         runDir: File
@@ -104,37 +73,14 @@ object S3Uploader {
             return
         }
 
-        // 2. Generate random serverId
-        val serverIdBytes = ByteArray(20)
-        secureRandom.nextBytes(serverIdBytes)
-        val serverId = serverIdBytes.joinToString("") { "%02x".format(it) }
+        // 2. POST to iodine server to get presigned upload URLs
+        val requestBody = """{"session_id":"$sessionId"}"""
 
-        // 3. Join server via Mojang session service (all values captured on main thread)
-        try {
-                sessionService.joinServer(
-                    GameProfile(playerUuidObj, username),
-                    accessToken,
-                    serverId
-                )
-        } catch (e: Exception) {
-            println("[MCAP ML] Mojang joinServer failed: ${e.message}")
-            return
-        }
-
-        // 4. POST to mine-auth /auth/begin
-        val requestBody = """
-            |{
-            |  "username": "$username",
-            |  "server_id": "$serverId",
-            |  "player_uuid": "$playerUuid",
-            |  "session_id": "$sessionId"
-            |}
-        """.trimMargin()
-
-        val authEndpoint = "${authUrl.trimEnd('/')}/auth/begin"
-        val conn = URI(authEndpoint).toURL().openConnection() as HttpURLConnection
+        val uploadEndpoint = "${IodineAuthClient.serverUrl()}/minecraft/upload"
+        val conn = URI(uploadEndpoint).toURL().openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("Authorization", "Bearer $jwtToken")
         conn.doOutput = true
         conn.connectTimeout = 10_000
         conn.readTimeout = 15_000
@@ -149,21 +95,21 @@ object S3Uploader {
         }
         if (responseCode != 200) {
             val errorMsg = conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-            println("[MCAP ML] mine-auth error ($responseCode): $errorMsg")
+            println("[MCAP ML] Server error ($responseCode): $errorMsg")
             return
         }
 
-        // 5. Parse presigned URLs from response
+        // 3. Parse presigned URLs from response
         val responseText = conn.inputStream.bufferedReader().readText()
         val urls = parseUrls(responseText)
         if (urls.isEmpty()) {
-            println("[MCAP ML] No presigned URLs received from mine-auth")
+            println("[MCAP ML] No presigned URLs received from server")
             return
         }
 
         println("[MCAP ML] Received ${urls.size} presigned URLs for session $sessionId")
 
-        // 6. Upload each file via HTTP PUT
+        // 4. Upload each file via HTTP PUT
         for ((filename, presignedUrl) in urls) {
             val file = File(sessionDir, filename)
             if (!file.exists()) {
@@ -204,7 +150,7 @@ object S3Uploader {
     }
 
     /**
-     * Parse the "urls" map from the mine-auth JSON response.
+     * Parse the "urls" map from the server JSON response.
      * Uses simple string parsing to avoid adding a JSON library dependency.
      */
     private fun parseUrls(json: String): Map<String, String> {
@@ -325,29 +271,6 @@ object S3Uploader {
             }
         } catch (e: Exception) {
             println("[MCAP ML] Failed to extract convert_upload.py from JAR: ${e.message}")
-        }
-
-        return null
-    }
-
-    /**
-     * Load the mine-auth URL from environment variable or config file.
-     */
-    private fun loadAuthUrl(runDir: File): String? {
-        // Check environment variable first
-        val envUrl = System.getenv("MINE_AUTH_URL")
-        if (envUrl != null) return envUrl
-
-        // Fall back to config file
-        val configFile = File(runDir, "mcap_ml_config.properties")
-        if (configFile.exists()) {
-            try {
-                val props = java.util.Properties()
-                configFile.inputStream().use { props.load(it) }
-                return props.getProperty("mine_auth.url")
-            } catch (e: Exception) {
-                println("[MCAP ML] Failed to load config: ${e.message}")
-            }
         }
 
         return null

@@ -3,6 +3,7 @@ package dev.replaycraft.mcap.ml
 import dev.replaycraft.mcap.analytics.AnalyticsEmitter
 import dev.replaycraft.mcap.analytics.RunOutcome
 import dev.replaycraft.mcap.analytics.RunTracker
+import dev.replaycraft.mcap.auth.IodineAuthClient
 import dev.replaycraft.mcap.capture.RecordingEventHandler
 import net.minecraft.client.MinecraftClient
 import java.io.File
@@ -14,6 +15,10 @@ import java.util.UUID
  * Manages the lifecycle of gamestate.bin and gamestate_events.bin writers,
  * manifest.json, and S3 upload. Runs in parallel with the existing
  * packets.bin capture without modifying it.
+ *
+ * Authentication is handled by [IodineAuthClient] which performs a Minecraft
+ * session handshake with the iodine server and returns a JWT used for all
+ * server communication (analytics emission and file upload).
  */
 object MlSessionManager {
 
@@ -30,7 +35,6 @@ object MlSessionManager {
 
     // --- Analytics ---
     private var runTracker: RunTracker? = null
-    private var analyticsEmitter: AnalyticsEmitter? = null
     private var endedByDeath = false
 
     /**
@@ -71,16 +75,19 @@ object MlSessionManager {
         runTracker = tracker
         RecordingEventHandler.runTracker = tracker
 
-        // Load analytics config
-        val config = loadAnalyticsConfig(client.runDirectory)
-        val endpoint = config.getProperty("analytics.endpoint", "")
-        val apiKey = config.getProperty("analytics.api_key", "")
-        val enabled = config.getProperty("analytics.enabled", "true")
-        if (enabled == "true" && apiKey.isNotBlank()) {
-            analyticsEmitter = AnalyticsEmitter(endpoint, apiKey)
-        } else {
-            analyticsEmitter = null
-            println("[MCAP Analytics] Analytics disabled — set analytics.api_key to enable")
+        // Try to load a cached iodine JWT from disk (fast, no I/O to server).
+        // Then kick off a background auth so the token is ready by session end.
+        IodineAuthClient.tryLoadCached(client)
+        Thread {
+            try {
+                IodineAuthClient.authenticate(client)
+            } catch (e: Exception) {
+                println("[Iodine Auth] Background auth failed: ${e.message}")
+            }
+        }.apply {
+            name = "Iodine-Auth-$sessionId"
+            isDaemon = true
+            start()
         }
 
         tickCounter = 0
@@ -135,24 +142,30 @@ object MlSessionManager {
 
         println("[MCAP ML] Stopping ML capture — session $sessionId ($tickCounter ticks)")
 
-        // Emit analytics before finalizing (lightweight, fires first)
+        // Use the cached iodine JWT (background auth in tryStart should have completed
+        // by now). If the token is not yet available, authenticate() returns instantly
+        // from the cache or returns null without blocking if the cache is empty.
+        val token = IodineAuthClient.getCachedToken()
+
+        if (token == null) {
+            println("[MCAP ML] No iodine JWT available — analytics and upload will be skipped")
+        }
+
+        // Build summary before clearing state
         val tracker = runTracker
-        val emitter = analyticsEmitter
-        if (tracker != null && emitter != null) {
+        val summary = if (tracker != null) {
             val dragonKilled = tracker.killTick >= 0
             val outcome = when {
                 dragonKilled -> RunOutcome.WIN
                 endedByDeath -> RunOutcome.DEATH
                 else -> RunOutcome.QUIT
             }
-            val summary = tracker.buildSummary(outcome)
-            emitter.emit(summary)
-        }
+            tracker.buildSummary(outcome)
+        } else null
 
         // Clear analytics state
         RecordingEventHandler.runTracker = null
         runTracker = null
-        analyticsEmitter = null
 
         // Close writers
         gameStateWriter?.close()
@@ -164,8 +177,13 @@ object MlSessionManager {
         val dir = sessionDir ?: return
         MlManifest.writeComplete(dir, sessionId, client)
 
-        // Upload session files to S3 via mine-auth presigned URLs (fire-and-forget)
-        S3Uploader.uploadViaAuth(dir, sessionId, client.runDirectory, client)
+        // Fire analytics and upload on background threads (non-blocking)
+        if (token != null && summary != null) {
+            AnalyticsEmitter(token).emit(summary)
+        }
+        if (token != null) {
+            S3Uploader.uploadViaAuth(dir, sessionId, client.runDirectory, token)
+        }
 
         sessionDir = null
     }
@@ -176,20 +194,4 @@ object MlSessionManager {
     fun isActive(): Boolean = active
 
     fun getSessionId(): String = sessionId
-
-    /**
-     * Load analytics config from mcap_ml_config.properties.
-     */
-    private fun loadAnalyticsConfig(runDir: File): java.util.Properties {
-        val props = java.util.Properties()
-        val configFile = File(runDir, "mcap_ml_config.properties")
-        if (configFile.exists()) {
-            try {
-                configFile.inputStream().use { props.load(it) }
-            } catch (e: Exception) {
-                println("[MCAP Analytics] Failed to load config: ${e.message}")
-            }
-        }
-        return props
-    }
 }
