@@ -339,6 +339,7 @@ class ReplayHandler {
 
         worldLoaded = true
         tick = setupEnd + 1 // Start playback after setup ticks (avoids re-dispatching last setup tick)
+        println("[MCAP] Bootstrap complete (ticks 0-$setupEnd): chunkLoads=${sender.totalChunkLoads}, blockUpdates=${sender.totalBlockUpdates}, decodeErrors=${sender.totalDecodeErrors}")
 
         // Close DownloadingTerrainScreen manually (matching ReplayMod lines 869-873).
         // MC shows this screen after GameJoinS2CPacket until PlayerPositionLookS2CPacket
