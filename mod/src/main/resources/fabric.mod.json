@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "mcap_replay",
   "version": "${version}",
-  "name": "MCAP Replay",
-  "description": "Tick-accurate capture and cinematic replay.",
+  "name": "MCAP ML",
+  "description": "ML data capture for Minecraft gameplay.",
   "authors": [
     "replaycraft"
   ],

@@ -17,38 +17,6 @@ repositories {
     mavenCentral()
 }
 
-val nativeProjectDir = rootProject.file("../native")
-val nativeLibBaseName = "mcap_native"
-
-fun currentOs(): String {
-    val os = System.getProperty("os.name").lowercase()
-    return when {
-        os.contains("mac") || os.contains("darwin") -> "macos"
-        os.contains("win") -> "windows"
-        os.contains("nux") || os.contains("linux") -> "linux"
-        else -> error("Unsupported OS: $os")
-    }
-}
-
-fun currentArch(): String {
-    val arch = System.getProperty("os.arch").lowercase()
-    return when {
-        arch.contains("aarch64") || arch.contains("arm64") -> "aarch64"
-        arch.contains("x86_64") || arch.contains("amd64") -> "x86_64"
-        else -> error("Unsupported arch: $arch")
-    }
-}
-
-fun nativeFileName(os: String): String {
-    return when (os) {
-        "macos" -> "lib${nativeLibBaseName}.dylib"
-        "linux" -> "lib${nativeLibBaseName}.so"
-        "windows" -> "${nativeLibBaseName}.dll"
-        else -> error("Unsupported OS: $os")
-    }
-}
-
-
 dependencies {
     minecraft("com.mojang:minecraft:$minecraftVersion")
     mappings("net.fabricmc:yarn:$yarnMappings:v2")
@@ -56,6 +24,10 @@ dependencies {
     modImplementation("net.fabricmc.fabric-api:fabric-api:$fabricVersion")
 
     modImplementation("net.fabricmc:fabric-language-kotlin:$fabricKotlinVersion")
+
+    // JSON parsing
+    implementation("com.google.code.gson:gson:2.10.1")
+    include("com.google.code.gson:gson:2.10.1")
 }
 
 java {
@@ -73,6 +45,25 @@ loom {
             sourceSet(sourceSets["client"])
         }
     }
+
+    runConfigs {
+        configureEach {
+            // Pass through dev auth/server env vars to the game process
+            listOf("IODINE_DEV_TOKEN", "IODINE_SERVER_URL").forEach { key ->
+                System.getenv(key)?.let { environmentVariable(key, it) }
+            }
+            // Default dev token (HS256, secret=iodine-jwt-secret-change-in-production, expires 2030)
+            // Only applied if IODINE_DEV_TOKEN is not already set above
+            if (System.getenv("IODINE_DEV_TOKEN") == null) {
+                environmentVariable(
+                    "IODINE_DEV_TOKEN",
+                    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+                    "eyJpc3MiOiJpb2RpbmUtd2Vic2VydmVyIiwiYXVkIjoiaW9kaW5lLWNsaWVudCIsInN1YiI6IjAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMCIsInVzZXJuYW1lIjoiRGV2UGxheWVyIiwiaWF0IjoxNzczNTE3NzQyLCJleHAiOjE4OTM0NTYwMDB9." +
+                    "5WKrnHAC0vND8i6y-VN6fGzJIUpfCARiCj-U6cY_98Q"
+                )
+            }
+        }
+    }
 }
 
 // Allow test source set to see client classes (analytics, ML, capture)
@@ -80,38 +71,11 @@ sourceSets["test"].compileClasspath += sourceSets["client"].output
 sourceSets["test"].runtimeClasspath += sourceSets["client"].output
 
 tasks {
-    val buildNative by registering(Exec::class) {
-        group = "build"
-        description = "Build the Rust JNI native library via Cargo."
-        workingDir = nativeProjectDir
-        commandLine("cargo", "build")
-    }
-
-    val copyNative by registering(Copy::class) {
-        group = "build"
-        description = "Copy the built native library into mod resources so NativeBridge can extract it."
-        dependsOn(buildNative)
-
-        val os = currentOs()
-        val arch = currentArch()
-        val outName = nativeFileName(os)
-
-        val builtPath = when (os) {
-            "windows" -> nativeProjectDir.resolve("target/debug/$outName")
-            else -> nativeProjectDir.resolve("target/debug/$outName")
-        }
-
-        from(builtPath)
-        into(project.layout.projectDirectory.dir("src/main/resources/natives/$os-$arch"))
-        rename { outName }
-    }
-
     withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
         kotlinOptions.jvmTarget = "17"
     }
 
     processResources {
-        dependsOn(copyNative)
         inputs.property("version", project.version)
         filesMatching("fabric.mod.json") {
             expand(mapOf("version" to project.version))

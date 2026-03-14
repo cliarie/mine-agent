@@ -30,8 +30,7 @@ object MlSessionManager {
 
     private var sessionId: String = ""
     private var sessionDir: File? = null
-    private var gameStateWriter: GameStateWriter? = null
-    private var gameStateEventWriter: GameStateEventWriter? = null
+    private var chunkManager: ChunkManager? = null
     private var tickCounter = 0
     private var wasSleeping = false
     private var wasAlive = true
@@ -76,12 +75,13 @@ object MlSessionManager {
         // Write manifest with in_progress status
         MlManifest.writeStart(baseDir, sessionId, client)
 
-        // Open writers
-        gameStateWriter = GameStateWriter(File(baseDir, "gamestate.bin")).also { it.open() }
-        gameStateEventWriter = GameStateEventWriter(File(baseDir, "gamestate_events.bin")).also { it.open() }
+        // Open chunk manager (handles rolling writers and uploads)
+        val playerId = client.session.uuidOrNull?.toString() ?: "unknown"
+        val token = IodineAuthClient.getCachedToken() ?: ""
+        chunkManager = ChunkManager(baseDir, sessionId, playerId, client.runDirectory, token)
+            .also { it.start() }
 
         // Initialize analytics tracking
-        val playerId = client.session.uuidOrNull?.toString() ?: "unknown"
         val modVersion = "0.1.0" // matches gradle.properties mod_version
         val tracker = RunTracker(sessionId, playerId, modVersion)
         runTracker = tracker
@@ -124,16 +124,13 @@ object MlSessionManager {
         val player = client.player ?: return
         val world = client.world
 
-        // Write fixed-size game state record
-        gameStateWriter?.writeTick(client, player, tickCounter)
-
-        // Check for inventory changes
-        gameStateEventWriter?.checkInventory(player, tickCounter)
+        // Write fixed-size game state record and check inventory (with automatic chunk rolling)
+        chunkManager?.onTick(client, player, tickCounter)
 
         // Detect player death
         val isAlive = player.isAlive
         if (wasAlive && !isAlive) {
-            gameStateEventWriter?.writePlayerDied(tickCounter)
+            chunkManager?.writeEvent { writer, tick -> writer.writePlayerDied(tick) }
             endedByDeath = true
         }
         wasAlive = isAlive
@@ -141,7 +138,7 @@ object MlSessionManager {
         // Detect sleep
         val isSleeping = player.isSleeping
         if (!wasSleeping && isSleeping) {
-            gameStateEventWriter?.writeSlept(tickCounter)
+            chunkManager?.writeEvent { writer, tick -> writer.writeSlept(tick) }
         }
         wasSleeping = isSleeping
 
@@ -149,7 +146,7 @@ object MlSessionManager {
         val dimKey = world?.registryKey?.value?.toString()
         if (dimKey != null && dimKey != lastDimension) {
             if (lastDimension != null) {
-                gameStateEventWriter?.writeDimensionChange(tickCounter, dimKey)
+                chunkManager?.writeEvent { writer, tick -> writer.writeDimensionChange(tick, dimKey) }
             }
             lastDimension = dimKey
         }
@@ -162,7 +159,9 @@ object MlSessionManager {
                 trackedEquipment[idx] = if (current.isEmpty) ItemStack.EMPTY else current.copy()
                 val itemName = if (current.isEmpty) "empty" else Registries.ITEM.getId(current.item).path
                 val enchanted = current.hasEnchantments()
-                gameStateEventWriter?.writeEquipmentChange(tickCounter, slot.name.lowercase(), itemName, enchanted)
+                chunkManager?.writeEvent { writer, tick ->
+                    writer.writeEquipmentChange(tick, slot.name.lowercase(), itemName, enchanted)
+                }
             }
         }
 
@@ -183,7 +182,9 @@ object MlSessionManager {
                                 if (name.contains("Ender Dragon", ignoreCase = true)) {
                                     val healthPct = bar.percent
                                     if (healthPct != lastDragonHealthPercent) {
-                                        gameStateEventWriter?.writeDragonHealth(tickCounter, healthPct)
+                                        chunkManager?.writeEvent { writer, tick ->
+                                            writer.writeDragonHealth(tick, healthPct)
+                                        }
                                         lastDragonHealthPercent = healthPct
                                     }
                                 }
@@ -209,15 +210,6 @@ object MlSessionManager {
 
         println("[MCAP ML] Stopping ML capture — session $sessionId ($tickCounter ticks)")
 
-        // Use the cached iodine JWT (background auth in tryStart should have completed
-        // by now). If the token is not yet available, authenticate() returns instantly
-        // from the cache or returns null without blocking if the cache is empty.
-        val token = IodineAuthClient.getCachedToken()
-
-        if (token == null) {
-            println("[MCAP ML] No iodine JWT available — analytics and upload will be skipped")
-        }
-
         // Build summary before clearing state
         val tracker = runTracker
         val summary = if (tracker != null) {
@@ -234,22 +226,18 @@ object MlSessionManager {
         RecordingEventHandler.runTracker = null
         runTracker = null
 
-        // Close writers
-        gameStateWriter?.close()
-        gameStateWriter = null
-        gameStateEventWriter?.close()
-        gameStateEventWriter = null
+        // Close and upload final chunk (ChunkManager handles writers and upload)
+        chunkManager?.end(tickCounter)
+        chunkManager = null
 
         // Update manifest to complete
         val dir = sessionDir ?: return
         MlManifest.writeComplete(dir, sessionId, client)
 
-        // Fire analytics and upload on background threads (non-blocking)
+        // Fire analytics on background thread (non-blocking)
+        val token = IodineAuthClient.getCachedToken()
         if (token != null && summary != null) {
             AnalyticsEmitter(token).emit(summary)
-        }
-        if (token != null) {
-            S3Uploader.uploadViaAuth(dir, sessionId, client.runDirectory, token)
         }
 
         sessionDir = null
@@ -269,7 +257,7 @@ object MlSessionManager {
      */
     fun onCrafted(itemName: String, count: Int) {
         if (!active) return
-        gameStateEventWriter?.writeCrafted(tickCounter, itemName, count)
+        chunkManager?.writeEvent { writer, tick -> writer.writeCrafted(tick, itemName, count) }
     }
 
     /**
@@ -277,6 +265,6 @@ object MlSessionManager {
      */
     fun onAdvancement(advancementId: String) {
         if (!active) return
-        gameStateEventWriter?.writeAdvancement(tickCounter, advancementId)
+        chunkManager?.writeEvent { writer, tick -> writer.writeAdvancement(tick, advancementId) }
     }
 }
