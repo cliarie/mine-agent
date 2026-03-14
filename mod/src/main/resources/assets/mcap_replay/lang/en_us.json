@@ -1,8 +1,4 @@
 {
-  "category.mcap_replay": "MCAP Replay",
-  "key.mcap_replay.toggle": "Toggle Replay",
-  "key.mcap_replay.playpause": "Play / Pause",
-  "key.mcap_replay.step": "Step One Tick",
-  "key.mcap_replay.prev_session": "Previous Session",
-  "key.mcap_replay.next_session": "Next Session"
+  "category.mcap_replay": "MCAP ML",
+  "key.mcap_replay.analytics_debug": "Analytics Debug (F8)"
 }

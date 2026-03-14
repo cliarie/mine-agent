@@ -123,6 +123,106 @@ object S3Uploader {
     }
 
     /**
+     * Convert and upload a single chunk's files to S3 via iodine-authenticated presigned URLs.
+     *
+     * Unlike [uploadViaAuth], this runs synchronously on the caller's thread (which should
+     * be a background thread managed by [ChunkManager]). Does not spawn its own thread.
+     *
+     * @param chunkDir directory containing the chunk's binary ML session files
+     * @param sessionId UUID of the session
+     * @param chunkIndex zero-based chunk index
+     * @param runDir Minecraft run directory (for script path resolution)
+     * @param jwtToken iodine JWT token for authentication
+     * @return true if conversion and upload completed successfully
+     */
+    fun uploadChunkViaAuth(
+        chunkDir: File,
+        sessionId: String,
+        chunkIndex: Int,
+        runDir: File,
+        jwtToken: String
+    ): Boolean {
+        if (jwtToken.isBlank()) {
+            println("[MCAP ML] Chunk upload skipped: no iodine JWT available")
+            return false
+        }
+
+        println("[MCAP ML] Starting convert and upload for session $sessionId chunk $chunkIndex")
+        return doChunkConvertAndUpload(jwtToken, sessionId, chunkIndex, chunkDir, runDir)
+    }
+
+    private fun doChunkConvertAndUpload(
+        jwtToken: String,
+        sessionId: String,
+        chunkIndex: Int,
+        chunkDir: File,
+        runDir: File
+    ): Boolean {
+        // 1. Run convert_upload.py --convert-only to convert .bin -> .parquet
+        if (!runConversion(chunkDir, sessionId, runDir)) {
+            println("[MCAP ML] Chunk upload skipped: conversion failed for chunk $chunkIndex")
+            return false
+        }
+
+        // Verify all expected files exist before uploading
+        val expectedFiles = listOf("tick_stream.parquet", "events.parquet", "manifest.json")
+        val missingFiles = expectedFiles.filter { !File(chunkDir, it).exists() }
+        if (missingFiles.isNotEmpty()) {
+            println("[MCAP ML] Chunk upload skipped: missing files after conversion: ${missingFiles.joinToString(", ")}")
+            return false
+        }
+
+        // 2. POST to iodine server to get presigned upload URLs
+        val requestBody = """{"session_id":"$sessionId","chunk_index":$chunkIndex}"""
+
+        val uploadEndpoint = "${IodineAuthClient.serverUrl()}/minecraft/upload"
+        val conn = URI(uploadEndpoint).toURL().openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("Authorization", "Bearer $jwtToken")
+        conn.doOutput = true
+        conn.connectTimeout = 10_000
+        conn.readTimeout = 15_000
+
+        OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(requestBody) }
+
+        val responseCode = conn.responseCode
+        if (responseCode == 401 || responseCode == 403) {
+            val errorMsg = conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+            println("[MCAP ML] Auth rejected ($responseCode): $errorMsg")
+            return false
+        }
+        if (responseCode != 200) {
+            val errorMsg = conn.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+            println("[MCAP ML] Server error ($responseCode): $errorMsg")
+            return false
+        }
+
+        // 3. Parse presigned URLs from response
+        val responseText = conn.inputStream.bufferedReader().readText()
+        val urls = parseUrls(responseText)
+        if (urls.isEmpty()) {
+            println("[MCAP ML] No presigned URLs received from server for chunk $chunkIndex")
+            return false
+        }
+
+        println("[MCAP ML] Received ${urls.size} presigned URLs for session $sessionId chunk $chunkIndex")
+
+        // 4. Upload each file via HTTP PUT
+        for ((filename, presignedUrl) in urls) {
+            val file = File(chunkDir, filename)
+            if (!file.exists()) {
+                println("[MCAP ML] File not found, skipping: $filename")
+                continue
+            }
+            uploadFile(file, presignedUrl, filename)
+        }
+
+        println("[MCAP ML] Upload complete for session $sessionId chunk $chunkIndex")
+        return true
+    }
+
+    /**
      * Upload a single file to a presigned S3 PUT URL.
      */
     private fun uploadFile(file: File, presignedUrl: String, filename: String) {
@@ -244,8 +344,9 @@ object S3Uploader {
      *
      * Search order:
      *   1. MCAP_CONVERT_SCRIPT env var (explicit override)
-     *   2. Already-extracted copy at <runDir>/mcap_replay/convert_upload.py
-     *   3. Extract from mod JAR classpath resource to <runDir>/mcap_replay/convert_upload.py
+     *   2. Extract from mod JAR classpath resource to <runDir>/mcap_replay/convert_upload.py
+     *      (always re-extracts to overwrite potentially stale copies from older mod versions)
+     *   3. Fall back to already-existing copy at <runDir>/mcap_replay/convert_upload.py
      */
     private fun findScript(runDir: File): File? {
         val envScript = System.getenv("MCAP_CONVERT_SCRIPT")
@@ -255,8 +356,8 @@ object S3Uploader {
         }
 
         val extractedScript = File(runDir, "mcap_replay/convert_upload.py")
-        if (extractedScript.exists()) return extractedScript
 
+        // Always try to extract fresh from JAR — overwrites stale copies from older mod versions
         try {
             val resourceStream = S3Uploader::class.java.getResourceAsStream("/scripts/convert_upload.py")
             if (resourceStream != null) {
@@ -266,12 +367,14 @@ object S3Uploader {
                         input.copyTo(output)
                     }
                 }
-                println("[MCAP ML] Extracted convert_upload.py to ${extractedScript.absolutePath}")
                 return extractedScript
             }
         } catch (e: Exception) {
             println("[MCAP ML] Failed to extract convert_upload.py from JAR: ${e.message}")
         }
+
+        // Fall back to existing copy if JAR extraction fails
+        if (extractedScript.exists()) return extractedScript
 
         return null
     }

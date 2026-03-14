@@ -112,6 +112,20 @@ object IodineAuthClient {
         val uuidNoDashes = uuid.replace("-", "")
         runDirectory = client.runDirectory
 
+        // Dev bypass: if IODINE_DEV_TOKEN is set, use it directly without Mojang handshake
+        val devToken = System.getenv("IODINE_DEV_TOKEN")
+        if (!devToken.isNullOrBlank()) {
+            val expiresAt = System.currentTimeMillis() + (24 * 60 * 60 * 1000L) // 24 hours
+            synchronized(lock) {
+                cachedToken = devToken
+                cachedExpiresAt = expiresAt
+                cachedUuid = uuid
+            }
+            saveToken(devToken, expiresAt, uuid)
+            println("[Iodine Auth] Using dev token from IODINE_DEV_TOKEN env var")
+            return devToken
+        }
+
         val base = serverUrl()
 
         // 1. GET /minecraft/auth/start
